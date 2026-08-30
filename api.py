@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 import auth
 import db
+import surge_simulator
 from pipeline import TriagePipeline
 from queue_sim import run_operational_scenario
 from surge import BASELINE_ARRIVALS_PER_HOUR
@@ -216,8 +217,35 @@ def surge_status(n_clinicians: int = 4):
     """Live, DB-backed ED operational status: NORMAL/SURGE/CRISIS derived
     from real arrivals and the real queue -- never from clinical bands.
     See surge.py / db.get_live_operational_status for the full contract.
+
+    Also carries the live simulator's current/last run (see
+    surge_simulator.get_status) so the dashboard button can show progress
+    and disable itself while a run is active, from the one endpoint it's
+    already polling.
     """
-    return db.get_live_operational_status(n_clinicians=n_clinicians)
+    status = db.get_live_operational_status(n_clinicians=n_clinicians)
+    status["simulation"] = surge_simulator.get_status()
+    return status
+
+
+@app.post("/surge/simulate-arrivals")
+def surge_simulate_arrivals(n_clinicians: int = 4):
+    """Starts the live, real-time arrival simulator (surge_simulator.py) for
+    the dashboard's "Simulate patient surge" button.
+
+    Unlike POST /surge/simulate below (an offline, in-memory what-if
+    calculation), this logs real rows into the live `patients` table, one at
+    a time, through the same pipeline.run()/db.insert_triage_record() path a
+    real nurse's POST /triage uses -- so the existing frequency-based
+    auto-detector in db.get_live_operational_status has something real to
+    detect, and the resulting state change is genuine, not asserted.
+
+    Returns immediately; the run continues in a background thread and stops
+    on its own once the live status leaves NORMAL (or a safety cap is hit).
+    Calling this again while a run is already active is a no-op that reports
+    the in-progress status instead of starting a second, overlapping run.
+    """
+    return surge_simulator.start(pipeline, n_clinicians=n_clinicians)
 
 
 class SurgeSimInput(BaseModel):

@@ -54,6 +54,12 @@ export const api = {
   setDisposition: (payload) => request("/disposition", { method: "POST", body: JSON.stringify(payload) }),
   getSurgeStatus: () => request("/surge/status"),
   simulateSurge: (payload) => request("/surge/simulate", { method: "POST", body: JSON.stringify(payload) }),
+  // Live, real-time arrival simulator for the dashboard's "Simulate patient
+  // surge" button -- distinct from simulateSurge() above, which is the
+  // offline what-if calculator. See surge_simulator.py / POST
+  // /surge/simulate-arrivals for what this actually does.
+  simulateArrivals: (n_clinicians = 4) =>
+    request(`/surge/simulate-arrivals?n_clinicians=${n_clinicians}`, { method: "POST" }),
 };
 
 // Mirrors surge.py OPERATIONAL_STATES. Colors reuse the existing band

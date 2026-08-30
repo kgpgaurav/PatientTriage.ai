@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, BAND_COLOR } from "../api";
+import { api, BAND_COLOR, OPERATIONAL_STATE_COLOR } from "../api";
 import QueueRow from "../components/QueueRow";
 
 export default function Dashboard() {
@@ -8,12 +8,15 @@ export default function Dashboard() {
   const [filter, setFilter] = useState("all");
   const [loadError, setLoadError] = useState(null);
   const [auditError, setAuditError] = useState(null);
+  const [opStatus, setOpStatus] = useState(null);
+  const [opError, setOpError] = useState(null);
+  const [simError, setSimError] = useState(null);
 
   const refresh = useCallback(async () => {
-    // Queue and audit are fetched independently, not via Promise.all: with
-    // role-based access control (auth.py) on, a nurse/clinician key can read
-    // the queue but not /audit (admin-only) -- one 403 on the audit call
-    // must not take down the whole board.
+    // Queue, audit, and operational status are fetched independently, not
+    // via Promise.all: with role-based access control (auth.py) on, a
+    // nurse/clinician key can read the queue but not /audit (admin-only) --
+    // one 403 on the audit call must not take down the whole board.
     try {
       const q = await api.getQueue();
       setQueue(q.summary);
@@ -29,6 +32,13 @@ export default function Dashboard() {
       setAudit([]);
       setAuditError(e.message);
     }
+    try {
+      const s = await api.getSurgeStatus();
+      setOpStatus(s);
+      setOpError(null);
+    } catch (e) {
+      setOpError(e.message);
+    }
   }, []);
 
   useEffect(() => {
@@ -36,6 +46,18 @@ export default function Dashboard() {
     const id = setInterval(refresh, 4000);
     return () => clearInterval(id);
   }, [refresh]);
+
+  async function handleSimulateSurge() {
+    setSimError(null);
+    try {
+      await api.simulateArrivals();
+      refresh();
+    } catch (e) {
+      setSimError(e.message);
+    }
+  }
+
+  const simRunning = Boolean(opStatus?.simulation?.running);
   const counts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   queue.forEach((p) => { counts[p.final_recommended_band] = (counts[p.final_recommended_band] || 0) + 1; });
 
@@ -48,6 +70,43 @@ export default function Dashboard() {
 
   return (
     <div>
+      <div className="panel" style={{ marginBottom: 20 }}>
+        <h2>ED operational status</h2>
+        {opError && <div className="error-box">Can't reach the API: {opError}</div>}
+        {opStatus && (
+          <div className="surge-live-row">
+            <span
+              className="surge-state-chip"
+              style={{
+                color: OPERATIONAL_STATE_COLOR[opStatus.operational_state.state],
+                borderColor: OPERATIONAL_STATE_COLOR[opStatus.operational_state.state],
+              }}
+            >
+              {opStatus.operational_state.state}
+            </span>
+            <span className="surge-live-detail">
+              {opStatus.operational_state.arrival_rate}/hr arrivals (baseline {opStatus.operational_state.baseline_rate}/hr,
+              {" "}{opStatus.operational_state.load_multiplier}×) · queue {opStatus.queue_length}
+              {" "}· {opStatus.safe_wait_breaches} awaiting reassessment
+            </span>
+          </div>
+        )}
+        <div className="toolbar" style={{ marginTop: 14, marginBottom: 0 }}>
+          <button className="btn secondary" onClick={handleSimulateSurge} disabled={simRunning}>
+            {simRunning
+              ? `Simulating surge… (${opStatus?.simulation?.count_logged ?? 0} logged)`
+              : "Simulate patient surge"}
+          </button>
+        </div>
+        {simError && <div className="error-box">Couldn't start simulation: {simError}</div>}
+        <div className="note-box" style={{ marginTop: 12, marginBottom: 0 }}>
+          This state is detected automatically from real arrival frequency and queue depth -- it is never set
+          manually. The button above logs synthetic patients into the live queue, one at a time in real time,
+          purely to give that detector something real to react to; it stops itself the moment the system
+          classifies the load as SURGE.
+        </div>
+      </div>
+
       <div className="counts">
         {[1, 2, 3, 4, 5].map((b) => (
           <div className="count-chip" key={b}>
