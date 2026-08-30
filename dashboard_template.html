@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PatientTriage.ai — Board</title>
+<style>
+  :root{
+    --bg:#0A0C10;
+    --panel:#12151C;
+    --panel-2:#171B23;
+    --line:#232833;
+    --text:#E7EBF0;
+    --muted:#7C8592;
+    --accent:#6FE7DD;
+    --band1:#E5484D;
+    --band2:#F4A261;
+    --band3:#F0C64B;
+    --band4:#4FA8D8;
+    --band5:#52B788;
+    --mono: ui-monospace, "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --sans: -apple-system, "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--sans);}
+  body{padding:24px 20px 80px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+
+  header.board-head{
+    display:flex;justify-content:space-between;align-items:flex-end;
+    border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:20px;
+    flex-wrap:wrap;gap:14px;
+  }
+  .title-block h1{
+    font-size:20px;letter-spacing:.02em;margin:0 0 4px;font-weight:600;
+  }
+  .title-block .sub{color:var(--muted);font-size:13px;font-family:var(--mono);}
+  .clock{
+    font-family:var(--mono);font-size:13px;color:var(--muted);
+    display:flex;gap:18px;align-items:center;
+  }
+  .clock .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 0 3px rgba(111,231,221,.15);display:inline-block;margin-right:6px;}
+
+  .counts{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;}
+  .count-chip{
+    font-family:var(--mono);font-size:12px;padding:6px 10px;border-radius:3px;
+    border:1px solid var(--line);background:var(--panel);color:var(--muted);
+    display:flex;align-items:center;gap:6px;
+  }
+  .count-chip b{color:var(--text);font-size:13px;}
+  .count-chip .sw{width:9px;height:9px;border-radius:2px;}
+
+  .toolbar{display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap;}
+  .btn{
+    font-family:var(--sans);font-size:12.5px;background:var(--panel);color:var(--text);
+    border:1px solid var(--line);padding:7px 12px;border-radius:4px;cursor:pointer;
+    transition:border-color .15s, color .15s;
+  }
+  .btn:hover{border-color:var(--accent);color:var(--accent);}
+  .btn.active{border-color:var(--accent);color:var(--accent);background:rgba(111,231,221,.08);}
+
+  table.board{width:100%;border-collapse:collapse;font-size:13.5px;}
+  table.board thead th{
+    text-align:left;font-family:var(--mono);font-weight:500;color:var(--muted);
+    font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+    padding:8px 10px;border-bottom:1px solid var(--line);
+  }
+  tr.row{cursor:pointer;border-bottom:1px solid var(--line);}
+  tr.row:hover td{background:var(--panel-2);}
+  tr.row td{padding:10px;vertical-align:middle;}
+  tr.row td.band-cell{width:6px;padding:0;}
+  .band-bar{width:6px;height:100%;min-height:38px;display:block;}
+  .pid{font-family:var(--mono);font-weight:600;}
+  .age-tag{color:var(--muted);font-size:12px;margin-left:6px;}
+  .band-pill{
+    font-family:var(--mono);font-size:12px;font-weight:700;padding:2px 8px;
+    border-radius:3px;display:inline-block;min-width:22px;text-align:center;
+  }
+  .vitals{font-family:var(--mono);font-size:12px;color:var(--muted);}
+  .vitals b{color:var(--text);}
+  .quality{font-family:var(--mono);font-size:11px;padding:2px 6px;border-radius:3px;border:1px solid var(--line);}
+  .quality.HIGH{color:var(--band5);border-color:var(--band5);}
+  .quality.MEDIUM{color:var(--band3);border-color:var(--band3);}
+  .quality.LOW{color:var(--band1);border-color:var(--band1);}
+  .prob{font-family:var(--mono);font-size:13px;}
+  .escalated-tag{
+    font-size:10.5px;color:var(--band1);border:1px solid var(--band1);border-radius:3px;
+    padding:1px 5px;margin-left:6px;font-family:var(--mono);
+  }
+
+  .detail{background:var(--panel);border-bottom:1px solid var(--line);display:none;}
+  .detail.open{display:table-row;}
+  .detail td{padding:16px 20px;}
+  .pipeline{display:flex;gap:0;align-items:stretch;margin-bottom:14px;overflow-x:auto;}
+  .pstep{
+    flex:1;min-width:130px;border:1px solid var(--line);padding:10px 12px;position:relative;
+    background:var(--panel-2);
+  }
+  .pstep + .pstep{border-left:none;}
+  .pstep .lbl{font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+  .pstep .val{font-size:13px;margin-top:4px;}
+  .pstep.fired{border-color:var(--band1);}
+  .note-box{
+    font-family:var(--mono);font-size:12.5px;color:var(--muted);background:var(--panel-2);
+    border-left:2px solid var(--accent);padding:8px 12px;margin-bottom:14px;
+  }
+  .shap-list{display:flex;flex-direction:column;gap:5px;font-family:var(--mono);font-size:12px;}
+  .shap-row{display:flex;align-items:center;gap:8px;}
+  .shap-bar-track{flex:1;height:6px;background:var(--line);position:relative;}
+  .shap-bar{height:6px;position:absolute;top:0;}
+  .shap-name{width:150px;color:var(--muted);flex-shrink:0;}
+  .shap-val{width:55px;text-align:right;flex-shrink:0;}
+  .gate-reason{font-size:13px;color:var(--band1);margin-top:6px;}
+  .gate-reason.clear{color:var(--band5);}
+
+  .override-form{margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .override-form select, .override-form input{
+    background:var(--bg);border:1px solid var(--line);color:var(--text);
+    font-family:var(--mono);font-size:12.5px;padding:6px 8px;border-radius:3px;
+  }
+  .override-form input[type=text]{flex:1;min-width:220px;}
+  .override-log{margin-top:10px;font-family:var(--mono);font-size:12px;color:var(--muted);}
+  .override-log b{color:var(--accent);}
+
+  section.panel-section{margin-top:36px;}
+  section.panel-section h2{
+    font-size:14px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em;
+    color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:14px;
+  }
+  .policy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;}
+  .policy-card{border:1px solid var(--line);background:var(--panel);padding:14px;}
+  .policy-card h3{margin:0 0 10px;font-size:13px;font-family:var(--mono);color:var(--text);}
+  .policy-card table{width:100%;font-size:11.5px;font-family:var(--mono);border-collapse:collapse;}
+  .policy-card td, .policy-card th{padding:3px 4px;text-align:right;border-bottom:1px solid var(--line);}
+  .policy-card th:first-child, .policy-card td:first-child{text-align:left;}
+  .finding{font-size:12.5px;color:var(--muted);margin-top:10px;line-height:1.5;}
+  .finding b{color:var(--text);}
+
+  .hidden{display:none !important;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="board-head">
+    <div class="title-block">
+      <h1>PATIENTTRIAGE.AI — LIVE BOARD</h1>
+      <div class="sub">20 simulated patients · decision-support, escalation-biased · clinician has final say</div>
+    </div>
+    <div class="clock"><span><span class="dot"></span>snapshot mode — no live model calls</span></div>
+  </header>
+
+  <div class="counts" id="counts"></div>
+
+  <div class="toolbar">
+    <button class="btn active" id="btn-all">All patients</button>
+    <button class="btn" id="btn-escalated">Gate-escalated only</button>
+    <button class="btn" id="btn-lowq">Low input completeness</button>
+  </div>
+
+  <table class="board">
+    <thead>
+      <tr>
+        <th></th><th>Patient</th><th>Vitals</th><th>Completeness</th><th>P(critical)</th><th>Model band</th><th>Final band</th>
+      </tr>
+    </thead>
+    <tbody id="board-body"></tbody>
+  </table>
+
+  <section class="panel-section">
+    <h2>Queue policy experiment — static priority vs FIFO vs wait-decay hybrid</h2>
+    <div id="policy-grid" class="policy-grid"></div>
+    <div class="finding" id="policy-finding"></div>
+  </section>
+
+  <section class="panel-section">
+    <h2>Audit trail (this session)</h2>
+    <div id="audit-log" class="override-log"></div>
+  </section>
+
+</div>
+
+<script id="snapshot-data" type="application/json">__DATA__</script>
+<script>
+const DATA = JSON.parse(document.getElementById('snapshot-data').textContent);
+const bandColor = {1:'var(--band1)',2:'var(--band2)',3:'var(--band3)',4:'var(--band4)',5:'var(--band5)'};
+
+const overrideLog = [...DATA.overrides];
+
+function bandPill(band){
+  return `<span class="band-pill" style="background:${bandColor[band]}22;color:${bandColor[band]};border:1px solid ${bandColor[band]}">${band}</span>`;
+}
+
+function renderCounts(){
+  const el = document.getElementById('counts');
+  const counts = {1:0,2:0,3:0,4:0,5:0};
+  DATA.patients.forEach(p => counts[p.final_recommended_band]++);
+  el.innerHTML = Object.entries(counts).map(([b,c]) =>
+    `<div class="count-chip"><span class="sw" style="background:${bandColor[b]}"></span>Band ${b} <b>${c}</b></div>`
+  ).join('');
+}
+
+function vitalsLine(d){
+  const parts = [];
+  if(d.age != null) parts.push(`${d.age}${d.age_group ? ' · '+d.age_group[0].toUpperCase()+d.age_group.slice(1) : ''}`);
+  if(d.hr != null) parts.push(`HR <b>${d.hr}</b>`);
+  if(d.sbp != null) parts.push(`SBP <b>${d.sbp}</b>`);
+  if(d.rr != null) parts.push(`RR <b>${d.rr}</b>`);
+  if(d.spo2 != null) parts.push(`SpO2 <b>${d.spo2}</b>`);
+  if(d.temp != null) parts.push(`T <b>${d.temp}</b>`);
+  return parts.join(' &nbsp; ');
+}
+
+function shapRow(item, maxAbs){
+  const pct = Math.round(Math.abs(item.contribution)/maxAbs*100);
+  const positive = item.contribution >= 0;
+  const color = positive ? 'var(--band1)' : 'var(--band5)';
+  const left = positive ? 50 : 50 - pct/2;
+  return `<div class="shap-row">
+    <div class="shap-name">${item.feature}</div>
+    <div class="shap-bar-track"><div class="shap-bar" style="left:${left}%;width:${pct/2}%;background:${color}"></div></div>
+    <div class="shap-val" style="color:${color}">${positive?'+':''}${item.contribution.toFixed(2)}</div>
+  </div>`;
+}
+
+function detailHTML(p){
+  const d = p._display || {};
+  const gateFired = p.safety_gate_triggers && p.safety_gate_triggers.length > 0;
+  const maxAbs = p.model_explanation ? Math.max(...p.model_explanation.map(x=>Math.abs(x.contribution))) : 1;
+
+  const pipeline = `
+    <div class="pipeline">
+      <div class="pstep ${p.extraction_backend === 'openai' ? '' : ''}">
+        <div class="lbl">Free text</div>
+        <div class="val">${p._note ? (p.extraction_backend === 'openai' ? 'OpenAI extraction' : 'heuristic extraction' + (p.extraction_status === 'ok_heuristic_fallback' ? ' (LLM fallback)' : '')) : 'no note'}</div>
+      </div>
+      <div class="pstep">
+        <div class="lbl">XGBoost</div>
+        <div class="val">P(crit) ${p.critical_probability!=null ? p.critical_probability.toFixed(2) : '—'}<br>sev ${p.severity_score!=null?Math.round(p.severity_score):'—'} → band ${p.model_recommended_band}</div>
+      </div>
+      <div class="pstep ${gateFired ? 'fired' : ''}">
+        <div class="lbl">Safety gate</div>
+        <div class="val">${gateFired ? p.safety_gate_triggers.length+' trigger(s)' : 'no escalation'}</div>
+      </div>
+      <div class="pstep">
+        <div class="lbl">Final</div>
+        <div class="val">band ${p.final_recommended_band} · ${p.input_completeness} completeness</div>
+      </div>
+    </div>`;
+
+  const note = p._note ? `<div class="note-box">"${p._note}"</div>` : '';
+  const gateReason = `<div class="gate-reason ${gateFired ? '' : 'clear'}">${p.safety_gate_reason}</div>`;
+  const shap = p.model_explanation ? `<div class="shap-list">${p.model_explanation.map(x=>shapRow(x,maxAbs)).join('')}</div>` : '<div style="color:var(--muted);font-size:12px">no explanation (model unavailable)</div>';
+
+  return `
+    ${pipeline}
+    ${note}
+    <div style="display:flex;gap:32px;flex-wrap:wrap">
+      <div style="flex:1;min-width:260px">
+        <div class="lbl" style="font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;margin-bottom:6px">Model explanation (SHAP)</div>
+        ${shap}
+      </div>
+      <div style="flex:1;min-width:220px">
+        <div class="lbl" style="font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;margin-bottom:6px">Safety gate</div>
+        ${gateReason}
+        <div class="override-form">
+          <select id="sel-${p.patient_id}">
+            ${[1,2,3,4,5].map(b=>`<option value="${b}" ${b===p.final_recommended_band?'selected':''}>Band ${b}</option>`).join('')}
+          </select>
+          <input type="text" id="reason-${p.patient_id}" placeholder="reason code (required for downgrade)">
+          <button class="btn" onclick="submitOverride('${p.patient_id}', ${p.final_recommended_band})">Log clinician decision</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderBoard(filterFn){
+  const body = document.getElementById('board-body');
+  const patients = DATA.patients.filter(filterFn || (()=>true));
+  body.innerHTML = patients.map(p => {
+    const d = p._display || {};
+    const escalated = p.final_recommended_band < p.model_recommended_band;
+    return `
+    <tr class="row" onclick="toggleDetail('${p.patient_id}')">
+      <td class="band-cell"><span class="band-bar" style="background:${bandColor[p.final_recommended_band]}"></span></td>
+      <td><span class="pid">${p.patient_id}</span></td>
+      <td class="vitals">${vitalsLine(d)}</td>
+      <td><span class="quality ${p.input_completeness}">${p.input_completeness}</span></td>
+      <td class="prob">${p.critical_probability!=null ? p.critical_probability.toFixed(2) : '—'}</td>
+      <td>${bandPill(p.model_recommended_band)}</td>
+      <td>${bandPill(p.final_recommended_band)}${escalated?'<span class="escalated-tag">GATE</span>':''}</td>
+    </tr>
+    <tr class="detail" id="detail-${p.patient_id}"><td colspan="7">${detailHTML(p)}</td></tr>
+    `;
+  }).join('');
+}
+
+function toggleDetail(pid){
+  const row = document.getElementById('detail-'+pid);
+  document.querySelectorAll('.detail.open').forEach(r => { if(r.id !== 'detail-'+pid) r.classList.remove('open'); });
+  row.classList.toggle('open');
+}
+
+function submitOverride(pid, aiBand){
+  const sel = document.getElementById('sel-'+pid);
+  const reasonInput = document.getElementById('reason-'+pid);
+  const clinicianBand = parseInt(sel.value, 10);
+  const reason = reasonInput.value.trim();
+  const isDowngrade = clinicianBand > aiBand;
+  if(isDowngrade && !reason){
+    reasonInput.style.borderColor = 'var(--band1)';
+    reasonInput.placeholder = 'reason code required to downgrade';
+    return;
+  }
+  const entry = {
+    event: clinicianBand === aiBand ? 'clinician_confirmed' : 'clinician_override',
+    patient_id: pid, ai_recommendation_band: aiBand, clinician_decision_band: clinicianBand,
+    override_reason: reason || null, is_downgrade: isDowngrade,
+    logged_at: new Date().toISOString(),
+  };
+  overrideLog.push(entry);
+  renderAudit();
+  reasonInput.value = '';
+  reasonInput.style.borderColor = '';
+}
+
+function renderAudit(){
+  const el = document.getElementById('audit-log');
+  const all = [...overrideLog].reverse();
+  el.innerHTML = all.map(e => `<div>${e.logged_at ? e.logged_at.slice(0,19) : ''} — <b>${e.event}</b> ${e.patient_id}: AI band ${e.ai_recommendation_band} → clinician band ${e.clinician_decision_band}${e.override_reason ? ' ("'+e.override_reason+'")' : ''}</div>`).join('');
+}
+
+function renderPolicyGrid(){
+  const grid = document.getElementById('policy-grid');
+  const scenarios = DATA.queue_policy_comparison;
+  grid.innerHTML = Object.entries(scenarios).map(([scenario, policies]) => {
+    const rows = Object.entries(policies).map(([policy, stats]) => {
+      return `<tr><td>${policy}</td><td>${stats.n_completed}/${stats.n_arrivals}</td><td>${stats.n_lwbs}</td></tr>`;
+    }).join('');
+    return `<div class="policy-card">
+      <h3>${scenario.replace(/_/g,' ')}</h3>
+      <table>
+        <tr><th>policy</th><th>completed</th><th>LWBS</th></tr>
+        ${rows}
+      </table>
+    </div>`;
+  }).join('');
+
+  const finding = document.getElementById('policy-finding');
+  finding.innerHTML = `<b>Finding:</b> under extreme sustained overload, pure static-priority ordering completes far fewer
+    patients overall than FIFO or the wait-decay hybrid (severe starvation of low-acuity patients), which is why the
+    production design does not rely on ordering policy alone — safe-wait ceilings plus mandatory reassessment (independent
+    of queue order) are what actually bound how long any single patient waits.`;
+}
+
+document.getElementById('btn-all').onclick = (e) => { setActive(e.target); renderBoard(); };
+document.getElementById('btn-escalated').onclick = (e) => { setActive(e.target); renderBoard(p => p.final_recommended_band < p.model_recommended_band); };
+document.getElementById('btn-lowq').onclick = (e) => { setActive(e.target); renderBoard(p => p.input_completeness === 'LOW'); };
+function setActive(btn){ document.querySelectorAll('.toolbar .btn').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); }
+
+renderCounts();
+renderBoard();
+renderPolicyGrid();
+renderAudit();
+</script>
+</body>
+</html>

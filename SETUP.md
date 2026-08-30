@@ -1,0 +1,395 @@
+# SETUP.md — PatientTriage.ai
+
+Everything you need to get the project running from a clean checkout: what each file
+does, how to install it, how to train the model, how to run the demo/dashboard, and
+how to run the tests.
+
+---
+
+## 1. Requirements
+
+- Python 3.10+ (built and tested on 3.12)
+- pip
+- Internet access only if you want to (a) `pip install` fresh, or (b) use the real
+  OpenAI extraction backend. Everything else runs fully offline.
+
+---
+
+## 2. File structure
+
+For a full description of every file's role, see [`README.md` §4](./README.md#4-repository-structure)
+(backend, frontend, offline dashboard, tests, generated files, and root config, each
+as its own table). Summary of the two independent execution paths:
+
+| Path | Chain | Talks to a DB? |
+|---|---|---|
+| **Offline demo** | `train.py` → `simulate.py` → `bake_dashboard.py` → `outputs/dashboard.html` | No — flat JSON/JSONL files only |
+| **Live** | `api.py` (+ `frontend/`) | Yes — `outputs/triage.db` |
+
+**Two separate paths, don't mix them up:**
+- The offline demo (20 fixed patients) writes `outputs/audit_log.jsonl` and nothing else — no database involved.
+- The live path — `api.py` + `frontend/` (React, the default UI) — is what persists real form submissions to
+  `outputs/triage.db` and survives restarts. This is what you want for "a nurse enters details and it updates the
+  database."
+
+**Dependency order matters**: `train.py` must run before either path (both need the trained `.pkl` models). Beyond
+that, `simulate.py` → `bake_dashboard.py` is its own chain, and `api.py` → `frontend/` is its own — you don't need to
+run `simulate.py` to use the live path.
+
+---
+
+## 3. Install
+
+```bash
+cd patient_triage
+python3 -m venv .venv          # optional but recommended
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+This installs: `numpy`, `pandas`, `scikit-learn`, `xgboost`, `shap`, `fastapi`,
+`uvicorn`, `openai`, `pytest`.
+
+---
+
+## 4. Train the model
+
+This is the step that actually builds the ML pipeline — synthetic data generation,
+baseline comparison, cost-sensitivity sweep, the final calibrated model, and SHAP
+importances all happen here.
+
+```bash
+python3 train.py
+```
+
+What it does, in order:
+
+1. Calls `data_gen.generate_dataset(n=4000)` — synthetic ED patients, age-stratified
+   (pediatric/adult/geriatric), with missing vitals and injected label noise. Also
+   writes `outputs/synthetic_patients.csv` if you want to inspect the raw data.
+2. Runs `features.to_dataframe(...)` to turn every patient into the full feature
+   vector (age-conditioned deviations, temporal features, missingness flags).
+3. `models.baseline_comparison(X, y)` — trains Logistic Regression, Random Forest, and
+   XGBoost with 5-fold cross-validation × 3 random seeds each, and reports recall,
+   precision, AUROC, AUPRC, and Brier score for each.
+4. `models.cost_sensitivity_sweep(X, y)` — retrains XGBoost at critical-class weights
+   2×/4×/6×/10× so you can see the recall/precision trade-off directly (6× is the one
+   shipped in the final model).
+5. `models.age_aware_ablation(...)` — age-conditioned features vs. naive age-as-a-number.
+6. Trains and calibrates the **final** critical-risk model
+   (`models.train_final_critical_model`, sigmoid calibration, 5-fold) and the
+   **severity** regressor (`models.train_severity_model`).
+7. Computes global SHAP feature importance.
+8. Writes everything to `outputs/`:
+   - `critical_model.pkl`, `severity_model.pkl` — the actual trained models
+   - `feature_cols.json` — column order (needed by `pipeline.py` and `api.py` to build
+     the right-shaped input row)
+   - `training_results.json` — every metric above, in one file
+
+Expect this to take under a minute on a laptop CPU (no GPU needed; XGBoost + SHAP on
+4,000 rows is fast). You'll see console output like:
+
+```
+Running baseline comparison (LR / RF / XGB)...
+Running cost-sensitivity sweep...
+Running age-aware ablation...
+Training final calibrated critical-risk model...
+Computing global SHAP importance...
+Done. Results written to outputs/training_results.json
+```
+
+**Re-running `train.py` overwrites the models.** If you want a different random seed
+or a different critical-class weight than the default 6×, edit the call in `main()`
+near the bottom of `train.py` (`train_final_critical_model(X, y, scale_pos_weight=6.0)`)
+and re-run.
+
+---
+
+## 5. Run the demo patients + surge simulation
+
+```bash
+python3 simulate.py
+```
+
+This loads the models you just trained (`outputs/critical_model.pkl`,
+`severity_model.pkl`, `feature_cols.json`) and:
+
+- Runs all 20 patients in `patients.py` through the full pipeline (extraction →
+  features → model → calibration → Safety Gate), printing each one's final band, the
+  model's own recommendation, P(critical), input completeness, which extraction backend
+  handled the note, and why the Safety Gate did or didn't escalate.
+- Logs one clinician override (a downgrade on P18, with a required reason code) and
+  demonstrates that an unexplained downgrade is rejected.
+- Runs the 3× surge simulation and the static/FIFO/wait-decay queue policy comparison.
+- Writes `outputs/dashboard_data.json` — the snapshot the dashboard reads.
+- Prints the tail of the audit log so you can see exactly what got recorded.
+
+---
+
+## 6. Build and view the dashboard
+
+```bash
+python3 bake_dashboard.py
+```
+
+This bakes `outputs/dashboard_data.json` into `dashboard_template.html`'s `__DATA__`
+placeholder and writes `outputs/dashboard.html`. Open that file directly in any
+browser — no server needed, it's fully self-contained:
+
+```bash
+open outputs/dashboard.html        # macOS
+xdg-open outputs/dashboard.html    # Linux
+start outputs/dashboard.html       # Windows
+```
+
+Click any patient row to expand the pipeline breakdown (extraction → model → Safety
+Gate → final band), the signed SHAP explanation, and a working override form that
+enforces the same reason-code-on-downgrade rule as the backend.
+
+If you change `patients.py` or re-run `simulate.py` with different scenarios, re-run
+`bake_dashboard.py` afterward to refresh the HTML.
+
+---
+
+## 7. Live path — nurse enters a patient, it's saved to the database
+
+This is the real, persistent workflow: a nurse fills in a form in the browser, submits
+it, and the triage decision is written to `outputs/triage.db` (SQLite) — not held in
+memory, not lost on restart.
+
+### 7.1 Start the API
+
+```bash
+uvicorn api:app --reload --port 8000
+```
+
+On first run this creates `outputs/triage.db` automatically (via `db.init_db()` — no
+manual migration step). You should see `INFO: Uvicorn running on http://127.0.0.1:8000`.
+
+### 7.2 Open the intake form
+
+Two options, same backend — **React is the default**:
+
+**React app (default)** — see `frontend/README.md` for detail:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Open the URL Vite prints (typically `http://localhost:5173`). Three routes: `/` (live
+board), `/add-patient` (intake form), `/surge` (surge simulation tab) — all talking to
+the API you started in 7.1. The nav bar's connection indicator and "reconnect" field
+let you point it at a different API host/port at runtime.
+
+**Zero-dependency fallback (optional, superseded)** — `frontend_nurse_intake.html`, no
+Node/npm needed. Kept only for demoing on a machine without the JS toolchain; not
+under active development. See `README.md` §10/§14 for whether to keep it.
+Open it directly in a browser (double-click it, or
+`open frontend_nurse_intake.html` / `xdg-open frontend_nurse_intake.html`). It's a
+static file — no build step, no server needed for the page itself, it just needs the
+API in step 7.1 to be reachable.
+
+Both give you the same controls:
+
+- The top-right field holds the API base URL — defaults to `http://localhost:8000`.
+  Change it if you ran uvicorn on a different port or host, then click **reconnect**.
+  A green dot means it's talking to the API; red means it can't reach it (check the
+  URL and that uvicorn is still running).
+- Fill in the patient fields — only **Patient ID** and **Age** are required, everything
+  else (vitals, symptoms, note) is optional, matching how little may be known for a
+  first-time patient.
+- Click **Submit to triage**. The result panel shows the final band, P(critical), data
+  quality, which extraction backend handled the note, the Safety Gate's reasoning, and
+  the SHAP explanation — the same information a nurse would need to trust or challenge
+  the recommendation in the few seconds they have.
+- The **live queue** panel on the right polls `GET /queue` every 4 seconds and will
+  show the new patient immediately, ordered by band and how long they've been waiting
+  against their safe-wait ceiling (breached waits are flagged in red).
+- Click a queue row to expand it and log a clinician decision (the override control).
+  Downgrading below the AI's recommendation is rejected client-side and server-side
+  without a reason code, exactly like `pipeline.record_clinician_decision`.
+- The **audit trail** panel polls `GET /audit` and shows every triage submission and
+  override as it happens.
+
+### 7.3 Reassessment / deterioration tracking
+
+Submit the **same Patient ID** again with new vitals (e.g. worsening SpO2). The API
+automatically looks up that patient's prior readings from the database
+(`db.get_patient_history`), passes them into the pipeline as temporal features, and
+the Safety Gate will fire `deterioration_trend` if things are getting worse — this is
+what "monitor patients already in the queue... if vitals are re-recorded as worsening"
+from the brief actually looks like end to end. The patient's original arrival time is
+preserved across reassessments (so their wait-time ceiling doesn't reset), and the
+prior submission is marked `superseded` in the database rather than deleted, so the
+full history stays queryable.
+
+### 7.4 Inspecting the database directly
+
+It's a normal SQLite file — no special tooling required:
+
+```bash
+sqlite3 outputs/triage.db "SELECT patient_id, final_recommended_band, input_completeness, created_at FROM patients ORDER BY id DESC LIMIT 10;"
+sqlite3 outputs/triage.db "SELECT * FROM overrides;"
+sqlite3 outputs/triage.db "SELECT * FROM audit_log ORDER BY id DESC LIMIT 10;"
+```
+
+Or from Python: `import db; db.get_queue()`, `db.get_patient_detail("P-1042")`,
+`db.get_audit_tail(20)`.
+
+### 7.5 API endpoints reference
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/triage` | POST | Submit a new patient or a reassessment — runs the full pipeline, writes to `patients` table |
+| `/override` | POST | Log a clinician decision — rejects an unexplained downgrade |
+| `/queue` | GET | Current waiting patients with real elapsed wait time vs. safe-wait ceiling |
+| `/patients/{patient_id}` | GET | Full latest record for one patient, including SHAP explanation |
+| `/audit` | GET | Recent audit log entries (`?n=` to control how many) |
+| `/model/status` | GET | Whether the pipeline is using the live model or the rules-only fallback |
+| `/model/unavailable` / `/model/available` | POST | Toggle the safe-fallback path (for testing degraded mode) |
+
+### 7.6 Using the real OpenAI extraction backend
+
+By default, free-text notes are parsed by the heuristic extractor in
+`llm_extract.py`. To use a real OpenAI call instead:
+
+```bash
+export OPENAI_API_KEY=sk-...
+# optional, defaults to gpt-4o-mini:
+export OPENAI_MODEL=gpt-4o-mini
+```
+
+No code changes needed — restart `uvicorn api:app` after setting the key. If the call
+fails for any reason (timeout, auth error, malformed response), the pipeline
+automatically falls back to the heuristic extractor rather than failing the request;
+you'll see `extraction_backend: "heuristic"` and `extraction_status:
+"ok_heuristic_fallback"` in the result when that happens.
+
+---
+
+## 8. Run the tests
+
+```bash
+python3 -m pytest tests/ -v
+```
+
+You should see 41 tests pass, split across four files:
+
+- **`test_safety_gate.py`** (13 tests) — the core safety invariant: for every hard
+  redline, deterioration trend, low-data-quality case, model-unavailable fallback, and
+  structural floor (zero-history, pregnancy, geriatric fall), the gate is only ever
+  allowed to move a patient to a *more* urgent band than the model recommended, never
+  less.
+- **`test_llm_extract.py`** (14 tests) — negation handling ("denies chest pain"),
+  multiple symptoms, empty/`None` notes, and — using a mocked OpenAI client so no
+  network call is made — the success path, a raised exception (falls back to
+  heuristic), malformed JSON (falls back), and a payload with hallucinated/invalid
+  keys (gets stripped down to the valid schema).
+- **`test_pipeline.py`** (7 tests, requires `train.py` to have been run first since it
+  loads the saved models) — missing vitals, invalid values, unexpected extra fields,
+  the model-unavailable fallback path capping at Band 3, a zero-history patient, and
+  the override reason-code requirement.
+- **`test_db.py`** (9 tests, uses a temp SQLite file, does not touch
+  `outputs/triage.db`) — insert-then-query, reassessment superseding the previous row
+  while keeping the original arrival time, patient history ordering for temporal
+  features, queue ordering by band then arrival, override writes updating the latest
+  row, audit log ordering, and breach flagging computed from real elapsed time.
+
+If `test_pipeline.py` fails with a `FileNotFoundError` on `outputs/critical_model.pkl`,
+that means you skipped step 4 — run `python3 train.py` first.
+
+Run a single file or test if you're iterating on one piece:
+
+```bash
+python3 -m pytest tests/test_safety_gate.py -v
+python3 -m pytest tests/test_db.py::test_reassessment_supersedes_previous_row_and_keeps_arrival_time -v
+```
+
+---
+
+## 9. Seeding the live demo (optional, React-first workflow)
+
+If you want the React dashboard to show a realistic queue immediately instead of an
+empty board:
+
+```bash
+uvicorn api:app --reload --port 8000 &      # terminal 1
+python3 seeds.py                            # terminal 2 — posts all 20 demo patients to /triage
+python3 fix_demo_arrivals.py                # spreads out arrival times so wait/breach states look realistic
+```
+
+Then open the React app (`cd frontend && npm run dev`) — the queue, band counts, and
+audit trail will already be populated. Re-run `fix_demo_arrivals.py` any time you want
+to reset the demo to a fresh mixed state without re-seeding.
+
+---
+
+## 10. Repo hygiene — what NOT to commit / what's safe to delete
+
+This project has generated artifacts and one now-superseded UI mixed in with source
+files. Before pushing to GitHub:
+
+**Never commit (now covered by `.gitignore`):**
+- `.env` — contains your real `OPENAI_API_KEY`. Only `.env.example` (a blank template)
+  should be committed. If a real key was ever committed, **rotate it** — treat it as
+  compromised the moment it touches a public repo, even if you delete it in a later commit.
+- `__pycache__/`, `*.pyc` — compiled Python, regenerated automatically.
+- `frontend/node_modules/`, `frontend/dist/` — installed by `npm install` / built by
+  `npm run build`, both fully reproducible from `package.json`.
+- `outputs/*.pkl`, `outputs/triage.db`, `outputs/synthetic_patients.csv`,
+  `outputs/training_results.json`, `outputs/dashboard_data.json`,
+  `outputs/dashboard.html`, `outputs/audit_log.jsonl`, `outputs/feature_cols.json` —
+  all regenerated by `train.py` / `simulate.py` / `bake_dashboard.py` / `api.py`.
+  `triage.db` in particular is runtime state (whatever you've seeded locally) and
+  will just conflict with a collaborator's own local data.
+
+**Safe to delete outright if React (`frontend/`) is your only frontend going forward:**
+- `frontend_nurse_intake.html` — the zero-dependency fallback intake page. It talks to
+  the same API, but `README.md` §14 already calls it superseded and "not being
+  developed further." Keep it only if you specifically want a no-Node fallback for
+  demoing on a machine without npm.
+- `dashboard_template.html` + `bake_dashboard.py` + the `outputs/dashboard.html` /
+  `outputs/dashboard_data.json` pair — this whole chain is the old static-HTML
+  "offline demo" dashboard, entirely separate from the live API/React path. Nothing
+  else in the project imports or depends on these files. If the offline,
+  no-server demo board isn't something you still need for grading/review, this chain
+  can go. `simulate.py` itself should stay — it's still useful as a scripted run of
+  the 20 demo patients + surge/queue experiment + override-rejection demo, independent
+  of whether you keep the HTML output it feeds.
+
+**Keep:** everything else, including `frontend/package-lock.json` (needed for
+reproducible `npm install`), `frontend/.env.example`, and `.env.example` — these are
+templates/lockfiles, not secrets or build output.
+
+---
+
+## 11. Full clean-run checklist
+
+From a fresh checkout, this is the whole thing end to end:
+
+```bash
+cd patient_triage
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env               # fill in OPENAI_API_KEY only if you want the live LLM backend
+python3 train.py
+python3 -m pytest tests/ -v
+
+# offline demo path (20 fixed patients, static dashboard) — optional, see README.md §10/§14
+python3 simulate.py
+python3 bake_dashboard.py
+open outputs/dashboard.html
+
+# live path (real nurse intake, persisted to SQLite) — the default UI
+uvicorn api:app --reload --port 8000 &
+python3 seeds.py                   # optional: pre-populate the queue, see §9
+python3 fix_demo_arrivals.py       # optional: realistic breach mix, see §9
+cd frontend && npm install && npm run dev
+```
+
+If you only want to look at the offline results without training anything yourself,
+the `outputs/` folder shipped in the delivered project already contains a trained
+model, a generated dashboard, and a training-results file — steps under §4–6 are only
+needed if you've deleted `outputs/` or want to retrain with different settings. The
+live path (§7) always needs `uvicorn api:app` running, since it's a real server, not a
+snapshot.

@@ -1,0 +1,38 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# --- Secrets ---
+.env
+*.env
+!.env.example
+
+# --- Generated ML / pipeline outputs (rebuilt by train.py / simulate.py / bake_dashboard.py) ---
+outputs/*.pkl
+outputs/*.db
+outputs/synthetic_patients.csv
+outputs/training_results.json
+outputs/dashboard_data.json
+outputs/dashboard.html
+outputs/audit_log.jsonl
+outputs/feature_cols.json
+
+# --- Frontend (Node/Vite) ---
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/*.local
+frontend/npm-debug.log*
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# --- Pytest ---
+.pytest_cache/
