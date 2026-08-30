@@ -1,4 +1,5 @@
 const STORAGE_KEY = "patienttriage_api_base";
+const API_KEY_STORAGE_KEY = "patienttriage_api_key";
 
 export function getApiBase() {
   return localStorage.getItem(STORAGE_KEY) || import.meta.env.VITE_API_BASE || "http://localhost:8000";
@@ -8,9 +9,25 @@ export function setApiBase(url) {
   localStorage.setItem(STORAGE_KEY, url.replace(/\/$/, ""));
 }
 
+// The staff member's own key (never a shared/global secret) -- sent as
+// X-API-Key so the backend's role-based access control (auth.py) can tell
+// who's asking and log/scope access accordingly. Kept in localStorage only,
+// not in source; entering it is a one-time login-style step per browser.
+export function getApiKey() {
+  return localStorage.getItem(API_KEY_STORAGE_KEY) || import.meta.env.VITE_API_KEY || "";
+}
+
+export function setApiKey(key) {
+  localStorage.setItem(API_KEY_STORAGE_KEY, key);
+}
+
 async function request(path, options = {}) {
+  const apiKey = getApiKey();
   const res = await fetch(getApiBase() + path, {
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(apiKey ? { "X-API-Key": apiKey } : {}),
+    },
     ...options,
   });
   if (!res.ok) {

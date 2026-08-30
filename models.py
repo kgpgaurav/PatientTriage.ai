@@ -121,6 +121,71 @@ def global_shap_importance(model, X, sample_n=500):
     return [(X.columns[i], float(mean_abs[i])) for i in order[:12]]
 
 
+def prediction_confidence(model, X_row, input_completeness="HIGH"):
+    """Model-certainty estimate, distinct from `_input_completeness`.
+
+    `_input_completeness` only says how much intake data was supplied; it
+    says nothing about whether the model itself is sure of its answer. This
+    looks at how much the model's own cross-validated sub-classifiers agree
+    with each other on this specific patient (the calibrated critical model
+    is a `CalibratedClassifierCV`, so it already carries 5 independently
+    fit fold estimators -- we reuse them instead of training anything new).
+
+    Two things lower confidence: (1) the fold estimators disagree with each
+    other on this patient (high ensemble spread), and (2) the input used to
+    reach that patient's prediction was itself thin (LOW/MEDIUM
+    completeness). Either one alone is enough to cap the label at MEDIUM;
+    both together cap it at LOW.
+
+    Returns a dict that is safe to attach to every scored result -- callers
+    should never emit `critical_probability` / `severity_score` without it.
+    """
+    try:
+        fold_probs = [
+            clf.estimator.predict_proba(X_row)[0, 1] if hasattr(clf, "estimator")
+            else clf.predict_proba(X_row)[0, 1]
+            for clf in model.calibrated_classifiers_
+        ]
+        spread = float(np.std(fold_probs))
+        mean_prob = float(np.mean(fold_probs))
+    except Exception:
+        spread, mean_prob = None, None
+
+    if spread is None:
+        return {
+            "confidence_score": None,
+            "confidence_level": "LOW",
+            "confidence_reason": "Could not compute model agreement for this input.",
+        }
+
+    # Ensemble spread -> raw confidence (0 spread == folds agree perfectly).
+    ensemble_confidence = max(0.0, 1.0 - min(spread / 0.25, 1.0))
+
+    completeness_penalty = {"HIGH": 0.0, "MEDIUM": 0.15, "LOW": 0.35}.get(input_completeness, 0.25)
+    confidence_score = round(max(0.0, ensemble_confidence - completeness_penalty), 3)
+
+    if confidence_score >= 0.7:
+        level = "HIGH"
+    elif confidence_score >= 0.4:
+        level = "MEDIUM"
+    else:
+        level = "LOW"
+
+    reasons = []
+    if spread > 0.1:
+        reasons.append(f"model's cross-validated folds disagree on this patient (±{spread:.2f})")
+    if input_completeness != "HIGH":
+        reasons.append(f"{input_completeness.lower()} input completeness")
+    reason = "; ".join(reasons) if reasons else "folds agree closely and intake data was complete"
+
+    return {
+        "confidence_score": confidence_score,
+        "confidence_level": level,
+        "confidence_reason": reason,
+        "ensemble_fold_spread": round(spread, 4),
+    }
+
+
 def patient_shap_explanation(model, X_row, feature_cols, top_n=5):
     est = model.calibrated_classifiers_[0].estimator if hasattr(model, "calibrated_classifiers_") else model
     explainer = shap.TreeExplainer(est)

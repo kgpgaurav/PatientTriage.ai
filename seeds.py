@@ -6,10 +6,16 @@ Usage:
     uvicorn api:app --reload --port 8000     # in one terminal
     python seed_from_patients.py             # in another
 
+If TRIAGE_API_KEYS is set (see .env.example / SETUP.md §7.1a) -- the same
+variable the server itself reads -- this script automatically picks a key
+from it with at least the "nurse" role. There's no separate seeding key to
+configure.
+
 Safe to re-run: each submission is a fresh row (patient_id repeats just
 supersede the previous row for that same patient, same as a reassessment).
 """
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -18,6 +24,32 @@ import urllib.request
 from patients import DEMO_PATIENTS
 
 API_BASE = "http://localhost:8000"
+
+
+def _pick_seed_api_key():
+    """Parse the same TRIAGE_API_KEYS format auth.py reads server-side
+    ("key:role,key:role,...") and pick one this script can use to POST
+    /triage -- any role of "nurse" or above. Returns None (no header sent)
+    if the var is unset, which is correct when the server has auth off.
+    """
+    raw = os.environ.get("TRIAGE_API_KEYS", "")
+    keys = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        key, role = pair.split(":", 1)
+        keys[key.strip()] = role.strip().lower()
+    for key, role in keys.items():
+        if role == "nurse":
+            return key
+    for key, role in keys.items():
+        if role in ("clinician", "admin"):
+            return key
+    return None
+
+
+API_KEY = _pick_seed_api_key()
 
 KNOWN_TOP_LEVEL = {
     "patient_id", "age", "age_group", "hr", "sbp", "rr", "temp", "spo2",
@@ -42,10 +74,13 @@ def to_payload(patient: dict) -> dict:
 
 def post_triage(payload: dict) -> dict:
     body = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
     req = urllib.request.Request(
         f"{API_BASE}/triage",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=15) as resp:

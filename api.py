@@ -10,10 +10,11 @@ from dotenv import load_dotenv
 # as module-level constants at import time.
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+import auth
 import db
 from pipeline import TriagePipeline
 from queue_sim import run_operational_scenario
@@ -79,7 +80,7 @@ class DispositionInput(BaseModel):
 
 
 @app.post("/triage")
-def triage(patient: PatientInput):
+def triage(patient: PatientInput, caller=Depends(auth.require_role("nurse"))):
     record = patient.dict(exclude={"symptoms", "note"})
     record.update(patient.symptoms)
 
@@ -110,9 +111,11 @@ def triage(patient: PatientInput):
         "row_id": row_id,
         "final_recommended_band": result["final_recommended_band"],
         "model_recommended_band": result["model_recommended_band"],
+        "confidence_level": result.get("confidence_level"),
         "safety_gate_triggers": result["safety_gate_triggers"],
         "extraction_backend": result.get("extraction_backend"),
         "reassessment": bool(history),
+        "submitted_by_role": caller["role"],
     })
 
     client_result = {k: v for k, v in result.items() if k != "feature_snapshot"}
@@ -123,7 +126,7 @@ def triage(patient: PatientInput):
 
 
 @app.post("/override")
-def override(payload: OverrideInput):
+def override(payload: OverrideInput, caller=Depends(auth.require_role("clinician"))):
     try:
         validate_band(payload.ai_recommendation_band, "ai_recommendation_band")
         validate_band(payload.clinician_band, "clinician_band")
@@ -144,13 +147,14 @@ def override(payload: OverrideInput):
             "clinician_decision_band": payload.clinician_band,
             "override_reason": cleaned_reason or None,
             "is_downgrade": payload.clinician_band > payload.ai_recommendation_band,
+            "decided_by_role": caller["role"],
         },
     )
     return {"status": "recorded"}
 
 
 @app.get("/queue")
-def queue_status():
+def queue_status(caller=Depends(auth.require_role("nurse"))):
     entries = db.get_queue()
     if not entries:
         try:
@@ -178,20 +182,23 @@ def queue_status():
 
 
 @app.get("/patients/{patient_id}")
-def patient_detail(patient_id: str):
+def patient_detail(patient_id: str, caller=Depends(auth.require_role("clinician"))):
     detail = db.get_patient_detail(patient_id)
+    db.insert_audit("patient_record_accessed", patient_id, {
+        "accessed_by_role": caller["role"], "found": bool(detail),
+    })
     if not detail:
         raise HTTPException(status_code=404, detail="patient not found")
     return detail
 
 
 @app.get("/patients/{patient_id}/history")
-def patient_history(patient_id: str):
+def patient_history(patient_id: str, caller=Depends(auth.require_role("nurse"))):
     return db.get_patient_timeline(patient_id)
 
 
 @app.post("/disposition")
-def set_disposition(payload: DispositionInput):
+def set_disposition(payload: DispositionInput, caller=Depends(auth.require_role("clinician"))):
     try:
         result = db.set_disposition(payload.patient_id, payload.disposition, payload.note)
     except ValueError as e:
@@ -200,7 +207,7 @@ def set_disposition(payload: DispositionInput):
 
 
 @app.get("/audit")
-def audit_tail(n: int = 20):
+def audit_tail(n: int = 20, caller=Depends(auth.require_role("admin"))):
     return db.get_audit_tail(n)
 
 

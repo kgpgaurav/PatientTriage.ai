@@ -7,15 +7,27 @@ export default function Dashboard() {
   const [audit, setAudit] = useState([]);
   const [filter, setFilter] = useState("all");
   const [loadError, setLoadError] = useState(null);
+  const [auditError, setAuditError] = useState(null);
 
   const refresh = useCallback(async () => {
+    // Queue and audit are fetched independently, not via Promise.all: with
+    // role-based access control (auth.py) on, a nurse/clinician key can read
+    // the queue but not /audit (admin-only) -- one 403 on the audit call
+    // must not take down the whole board.
     try {
-      const [q, a] = await Promise.all([api.getQueue(), api.getAudit(15)]);
+      const q = await api.getQueue();
       setQueue(q.summary);
-      setAudit(a);
       setLoadError(null);
     } catch (e) {
       setLoadError(e.message);
+    }
+    try {
+      const a = await api.getAudit(15);
+      setAudit(a);
+      setAuditError(null);
+    } catch (e) {
+      setAudit([]);
+      setAuditError(e.message);
     }
   }, []);
 
@@ -87,16 +99,22 @@ export default function Dashboard() {
 
       <div className="audit-panel panel">
         <h2>Audit trail</h2>
-        <div className="audit-list">
-          {[...audit].reverse().map((e, i) => (
-            <div key={i}>
-              {(e.created_at || "").slice(11, 19)} — <b>{e.event_type}</b> {e.patient_id}
-              {e.final_recommended_band != null && `: band ${e.final_recommended_band}`}
-              {e.clinician_decision_band != null && `: AI ${e.ai_recommendation_band} → clinician ${e.clinician_decision_band}`}
-              {e.override_reason && ` ("${e.override_reason}")`}
-            </div>
-          ))}
-        </div>
+        {auditError ? (
+          <div className="error-box" style={{ display: "block" }}>
+            Audit trail requires an admin key ({auditError}).
+          </div>
+        ) : (
+          <div className="audit-list">
+            {[...audit].reverse().map((e, i) => (
+              <div key={i}>
+                {(e.created_at || "").slice(11, 19)} — <b>{e.event_type}</b> {e.patient_id}
+                {e.final_recommended_band != null && `: band ${e.final_recommended_band}`}
+                {e.clinician_decision_band != null && `: AI ${e.ai_recommendation_band} → clinician ${e.clinician_decision_band}`}
+                {e.override_reason && ` ("${e.override_reason}")`}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -50,6 +50,19 @@ pip install -r requirements.txt
 This installs: `numpy`, `pandas`, `scikit-learn`, `xgboost`, `shap`, `fastapi`,
 `uvicorn`, `openai`, `pytest`.
 
+Then set up your environment file:
+
+```bash
+cp .env.example .env
+```
+
+`.env.example` documents two independent, optional settings — leave either blank if
+you don't need it:
+- `OPENAI_API_KEY` / `OPENAI_MODEL` — only needed for the real OpenAI note-extraction
+  backend (§7.6 below); without it, the heuristic extractor is used automatically.
+- `TRIAGE_API_KEYS` — only needed to turn on patient-data access control on the live
+  API (§7.1a below); without it, the API runs open (fine for a local-only demo).
+
 ---
 
 ## 4. Train the model
@@ -166,6 +179,39 @@ uvicorn api:app --reload --port 8000
 On first run this creates `outputs/triage.db` automatically (via `db.init_db()` — no
 manual migration step). You should see `INFO: Uvicorn running on http://127.0.0.1:8000`.
 
+### 7.1a (Optional but recommended) Turn on patient-data access control
+
+By default — if `TRIAGE_API_KEYS` is unset in `.env` — the API runs **open**: anyone
+who can reach it can read/write patient data. That's fine for a solo local demo, but
+turn on access control (`auth.py`) the moment more than one person can reach the
+server, or before any submission/review where this matters:
+
+```bash
+# in .env (see .env.example for the exact format)
+TRIAGE_API_KEYS=nurse-demo-key:nurse,clinician-demo-key:clinician,admin-demo-key:admin
+```
+
+Restart `uvicorn` after editing `.env` so it picks up the new keys. Once set:
+
+| Role | Key (from the example above) | Can reach |
+|---|---|---|
+| `nurse` | `nurse-demo-key` | `POST /triage`, `GET /queue`, `GET /patients/{id}/history` |
+| `clinician` | `clinician-demo-key` | everything a nurse can, plus `POST /override`, `POST /disposition`, `GET /patients/{id}` (full record) |
+| `admin` | `admin-demo-key` | everything a clinician can, plus `GET /audit` |
+
+Every request now needs an `X-API-Key` header with one of these keys; a missing key
+gets `401`, an insufficient role gets `403` — both are also written to the audit log
+(`patient_record_accessed`, etc.) so you can see denied attempts alongside normal
+activity (`sqlite3 outputs/triage.db "SELECT * FROM audit_log ORDER BY id DESC LIMIT 10;"`).
+
+Quick check it's working:
+```bash
+curl -s http://localhost:8000/queue                                    # -> 401, no key
+curl -s http://localhost:8000/queue -H "X-API-Key: nurse-demo-key"      # -> 200
+curl -s http://localhost:8000/audit -H "X-API-Key: nurse-demo-key"      # -> 403, wrong role
+curl -s http://localhost:8000/audit -H "X-API-Key: admin-demo-key"      # -> 200
+```
+
 ### 7.2 Open the intake form
 
 Two options, same backend — **React is the default**:
@@ -178,8 +224,18 @@ npm run dev
 ```
 Open the URL Vite prints (typically `http://localhost:5173`). Three routes: `/` (live
 board), `/add-patient` (intake form), `/surge` (surge simulation tab) — all talking to
-the API you started in 7.1. The nav bar's connection indicator and "reconnect" field
-let you point it at a different API host/port at runtime.
+the API you started in 7.1. The nav bar's connection indicator, "reconnect" field, and
+**staff API key field** (only needed if you set `TRIAGE_API_KEYS` in 7.1a) let you
+point it at a different API host/port and authenticate at runtime.
+
+**Which key to type in that field:** the live board (`/`) calls both `/queue`
+(nurse+) and `/audit` (admin-only) to render the queue table and the audit panel
+together — so for full app functionality, enter **`admin-demo-key`**. Admin is the
+top of the role hierarchy, so it can do everything `nurse`/`clinician` keys can too
+(submit intake, override, view patient detail). If you enter a `nurse` or `clinician`
+key instead, the queue table still renders normally, but the audit panel shows
+"Audit trail requires an admin key" instead of failing the whole page — useful if you
+specifically want to demo what a lower-privilege login sees.
 
 **Zero-dependency fallback (optional, superseded)** — `frontend_nurse_intake.html`, no
 Node/npm needed. Kept only for demoing on a machine without the JS toolchain; not
@@ -238,15 +294,19 @@ Or from Python: `import db; db.get_queue()`, `db.get_patient_detail("P-1042")`,
 
 ### 7.5 API endpoints reference
 
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/triage` | POST | Submit a new patient or a reassessment — runs the full pipeline, writes to `patients` table |
-| `/override` | POST | Log a clinician decision — rejects an unexplained downgrade |
-| `/queue` | GET | Current waiting patients with real elapsed wait time vs. safe-wait ceiling |
-| `/patients/{patient_id}` | GET | Full latest record for one patient, including SHAP explanation |
-| `/audit` | GET | Recent audit log entries (`?n=` to control how many) |
-| `/model/status` | GET | Whether the pipeline is using the live model or the rules-only fallback |
-| `/model/unavailable` / `/model/available` | POST | Toggle the safe-fallback path (for testing degraded mode) |
+| Endpoint | Method | Purpose | Minimum role (if `TRIAGE_API_KEYS` is set) |
+|---|---|---|---|
+| `/triage` | POST | Submit a new patient or a reassessment — runs the full pipeline, writes to `patients` table | `nurse` |
+| `/override` | POST | Log a clinician decision — rejects an unexplained downgrade | `clinician` |
+| `/queue` | GET | Current waiting patients with real elapsed wait time vs. safe-wait ceiling | `nurse` |
+| `/patients/{patient_id}` | GET | Full latest record for one patient, including SHAP explanation | `clinician` |
+| `/patients/{patient_id}/history` | GET | Patient's prior vitals only (no note/SHAP) | `nurse` |
+| `/disposition` | POST | Move a patient's ED disposition (in treatment, admitted, discharged, ...) | `clinician` |
+| `/audit` | GET | Recent audit log entries (`?n=` to control how many) | `admin` |
+| `/model/status` | GET | Whether the pipeline is using the live model or the rules-only fallback | none (no PII) |
+| `/model/unavailable` / `/model/available` | POST | Toggle the safe-fallback path (for testing degraded mode) | none (no PII) |
+
+If `TRIAGE_API_KEYS` is unset, every endpoint is open (no key required) — see §7.1a.
 
 ### 7.6 Using the real OpenAI extraction backend
 
@@ -318,6 +378,27 @@ python3 seeds.py                            # terminal 2 — posts all 20 demo p
 python3 fix_demo_arrivals.py                # spreads out arrival times so wait/breach states look realistic
 ```
 
+If you set `TRIAGE_API_KEYS` (§7.1a), `seeds.py` automatically picks a usable key out
+of that same variable — nothing extra to export or configure.
+
+### 9.1 One command: reset + reseed (for recording a demo video)
+
+`reset_and_seed.py` does all three steps above in one shot — wipes `outputs/triage.db`
+back to empty first, so every take starts from the exact same clean state:
+
+```bash
+uvicorn api:app --reload --port 8000 &      # terminal 1, must already be running
+python3 reset_and_seed.py                   # terminal 2
+```
+
+It clears `patients`, `overrides`, and `audit_log` (via `db.reset_demo_db()`),
+re-submits all 20 demo patients through the real running API (so audit entries and
+`confidence_*` fields are populated exactly as they would be from the UI), then
+randomizes arrival times for a realistic breached/not-breached mix. Safe to re-run
+before every take. It does **not** delete `outputs/audit_log.jsonl` (the separate
+flat-file log) — remove that yourself first if you want a fully blank audit history
+too.
+
 Then open the React app (`cd frontend && npm run dev`) — the queue, band counts, and
 audit trail will already be populated. Re-run `fix_demo_arrivals.py` any time you want
 to reset the demo to a fresh mixed state without re-seeding.
@@ -330,9 +411,12 @@ This project has generated artifacts and one now-superseded UI mixed in with sou
 files. Before pushing to GitHub:
 
 **Never commit (now covered by `.gitignore`):**
-- `.env` — contains your real `OPENAI_API_KEY`. Only `.env.example` (a blank template)
-  should be committed. If a real key was ever committed, **rotate it** — treat it as
-  compromised the moment it touches a public repo, even if you delete it in a later commit.
+- `.env` — contains your real `OPENAI_API_KEY` and/or `TRIAGE_API_KEYS`. Only
+  `.env.example` (a blank template) should be committed. If a real value was ever
+  committed, **rotate it** — treat it as compromised the moment it touches a public
+  repo, even if you delete it in a later commit. This applies to `TRIAGE_API_KEYS`
+  just as much as `OPENAI_API_KEY`: a leaked staff key gives read access to patient
+  records until you change it.
 - `__pycache__/`, `*.pyc` — compiled Python, regenerated automatically.
 - `frontend/node_modules/`, `frontend/dist/` — installed by `npm install` / built by
   `npm run build`, both fully reproducible from `package.json`.
@@ -371,7 +455,7 @@ From a fresh checkout, this is the whole thing end to end:
 cd patient_triage
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env               # fill in OPENAI_API_KEY only if you want the live LLM backend
+cp .env.example .env               # fill in OPENAI_API_KEY and/or TRIAGE_API_KEYS if you want them
 python3 train.py
 python3 -m pytest tests/ -v
 
@@ -382,8 +466,7 @@ open outputs/dashboard.html
 
 # live path (real nurse intake, persisted to SQLite) — the default UI
 uvicorn api:app --reload --port 8000 &
-python3 seeds.py                   # optional: pre-populate the queue, see §9
-python3 fix_demo_arrivals.py       # optional: realistic breach mix, see §9
+python3 reset_and_seed.py          # optional: clean, reseeded queue in one command, see §9.1
 cd frontend && npm install && npm run dev
 ```
 

@@ -36,3 +36,5 @@ frontend/npm-debug.log*
 
 # --- Pytest ---
 .pytest_cache/
+
+reset_and_seed.py

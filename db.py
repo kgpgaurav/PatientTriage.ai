@@ -120,9 +120,35 @@ def init_db():
     _ensure_column(conn, "patients", "status_updated_at", "TEXT")
     _ensure_column(conn, "patients", "reassessment_required", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "patients", "reassessment_required_at", "TEXT")
+    _ensure_column(conn, "patients", "confidence_score", "REAL")
+    _ensure_column(conn, "patients", "confidence_level", "TEXT")
+    _ensure_column(conn, "patients", "confidence_reason", "TEXT")
     conn.execute(
         "INSERT OR IGNORE INTO surge_watermark (id, last_state, max_queue_length, over_threshold) "
         "VALUES (1, NULL, 0, 0)"
+    )
+    conn.commit()
+    conn.close()
+
+
+def reset_demo_db():
+    """Wipe all live-path data back to empty: `patients`, `overrides`,
+    `audit_log`, and the surge watermark. Used by `reset_and_seed.py` so a
+    demo/recording always starts from the same clean state, on demand,
+    without deleting the `triage.db` file itself (so a running `uvicorn`
+    process doesn't need to be restarted).
+
+    Does NOT touch `outputs/audit_log.jsonl` -- the separate flat-file audit
+    log written by `pipeline.run`/`audit.write_record` -- since that log is
+    meant to be an append-only record independent of what's currently in the
+    live queue. Delete that file yourself if you want a fully blank slate.
+    """
+    conn = get_conn()
+    conn.execute("DELETE FROM patients")
+    conn.execute("DELETE FROM overrides")
+    conn.execute("DELETE FROM audit_log")
+    conn.execute(
+        "UPDATE surge_watermark SET last_state = NULL, max_queue_length = 0, over_threshold = 0 WHERE id = 1"
     )
     conn.commit()
     conn.close()
@@ -303,8 +329,9 @@ def insert_triage_record(patient_id, input_record, result, arrival_time=None):
             critical_probability, severity_score, input_completeness, model_recommended_band,
             final_recommended_band, safety_gate_triggers_json, safety_gate_reason,
             model_explanation_json, extraction_status, extraction_backend, model_status,
-            reassessment_required, reassessment_required_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            reassessment_required, reassessment_required_at,
+            confidence_score, confidence_level, confidence_reason
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             patient_id, "waiting", arrival_time, _now(), json.dumps(input_record),
             json.dumps(result.get("feature_snapshot")) if result.get("feature_snapshot") else None,
@@ -314,6 +341,7 @@ def insert_triage_record(patient_id, input_record, result, arrival_time=None):
             json.dumps(result.get("model_explanation")) if result.get("model_explanation") else None,
             result.get("extraction_status"), result.get("extraction_backend"), result.get("model_status"),
             0, None,
+            result.get("confidence_score"), result.get("confidence_level"), result.get("confidence_reason"),
         ),
     )
     conn.commit()
@@ -597,6 +625,9 @@ def get_queue(now=None):
             # --- model output ---
             "critical_probability": row["critical_probability"],
             "severity_score": row["severity_score"],
+            "confidence_score": row["confidence_score"],
+            "confidence_level": row["confidence_level"] or "LOW",
+            "confidence_reason": row["confidence_reason"],
             "input_completeness": row["input_completeness"],
             "model_explanation": model_explanation,
             "model_status": row["model_status"],

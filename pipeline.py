@@ -42,9 +42,21 @@ class TriagePipeline:
         if self.model_status == "ok":
             critical_probability = float(self.critical_model.predict_proba(X_row)[0, 1])
             severity_score = float(self.severity_model.predict(X_row)[0])
+            confidence = models.prediction_confidence(
+                self.critical_model, X_row, input_completeness=feats.get("_input_completeness", "HIGH")
+            )
         else:
             critical_probability = None
             severity_score = None
+            # No score is being returned at all here (safety_gate fallback
+            # takes over) -- but we still surface an explicit confidence
+            # record rather than silently omitting one, per the "never
+            # return a score without a confidence indicator" rule.
+            confidence = {
+                "confidence_score": None,
+                "confidence_level": "LOW",
+                "confidence_reason": "ML model unavailable -- rules-based safety fallback in use.",
+            }
 
         if critical_probability is not None:
             model_band = 1 if critical_probability >= 0.55 else models.severity_to_band(severity_score)
@@ -64,6 +76,9 @@ class TriagePipeline:
             "patient_id": record.get("patient_id"),
             "critical_probability": critical_probability,
             "severity_score": severity_score,
+            "confidence_score": confidence.get("confidence_score"),
+            "confidence_level": confidence.get("confidence_level"),
+            "confidence_reason": confidence.get("confidence_reason"),
             "input_completeness": feats.get("_input_completeness"),
             "model_recommended_band": model_band,
             "final_recommended_band": gate_band,
@@ -97,6 +112,9 @@ class TriagePipeline:
             entry["extraction_backend"] = extraction_backend
             entry["red_flag_sources"] = red_flag_sources
             entry["age_group_overridden"] = age_group_overridden
+            entry["confidence_score"] = confidence.get("confidence_score")
+            entry["confidence_level"] = confidence.get("confidence_level")
+            entry["confidence_reason"] = confidence.get("confidence_reason")
             audit.write_record(entry)
 
         return result

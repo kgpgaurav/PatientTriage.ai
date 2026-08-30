@@ -210,6 +210,19 @@ export default function AddPatient() {
               input completeness <b>{result.input_completeness}</b> &nbsp;
               extraction <b>{result.extraction_backend || "none"}</b>
             </div>
+            <div
+              className="result-line"
+              title="How much the model's own cross-validated folds agree on this patient, adjusted for how complete the intake data was. Distinct from input completeness above."
+              style={{
+                color:
+                  result.confidence_level === "HIGH" ? "var(--band5)" :
+                  result.confidence_level === "MEDIUM" ? "var(--band3)" : "var(--band1)",
+              }}
+            >
+              model confidence <b>{result.confidence_level || "LOW"}</b>
+              {result.confidence_score != null && <> ({result.confidence_score.toFixed(2)})</>}
+              {result.confidence_reason && <span style={{ color: "var(--muted)" }}> — {result.confidence_reason}</span>}
+            </div>
 
             {result.age_group_overridden && (
               <div className="result-line" style={{ color: "var(--band3)" }}>

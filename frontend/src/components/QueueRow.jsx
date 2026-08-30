@@ -197,6 +197,14 @@ export default function QueueRow({ entry, onOverridden }) {
         </td>
         <td className="prob">
           {entry.critical_probability != null ? entry.critical_probability.toFixed(2) : "—"}
+          <br />
+          <span
+            className={`quality ${entry.confidence_level || "LOW"}`}
+            style={{ fontSize: 10 }}
+            title={entry.confidence_reason || "Model certainty for this prediction — never omitted alongside a score."}
+          >
+            conf: {entry.confidence_level || "LOW"}
+          </span>
         </td>
         <td>
           <BandPill band={entry.model_recommended_band} />
@@ -256,6 +264,11 @@ export default function QueueRow({ entry, onOverridden }) {
                       P(crit) {entry.critical_probability != null ? entry.critical_probability.toFixed(2) : "—"}
                       <br />
                       sev {entry.severity_score != null ? Math.round(entry.severity_score) : "—"} → band {entry.model_recommended_band ?? "—"}
+                      <br />
+                      <span title={entry.confidence_reason}>
+                        confidence: {entry.confidence_level || "LOW"}
+                        {entry.confidence_score != null && ` (${entry.confidence_score.toFixed(2)})`}
+                      </span>
                     </>
                   )}
                 </div>
