@@ -582,21 +582,3 @@ project's own audit-trail philosophy:
 
 ---
 
-## 14. Design decisions / open questions
-
-A few places where a judgment call was made — worth flagging in case they don't match
-what you have in mind:
-
-- **Two frontends existed; now there's one.** `frontend_nurse_intake.html` was kept
-  alongside the React app early on as a zero-Node fallback. With `frontend/` as the
-  only frontend, that file — along with the old static-HTML offline dashboard chain
-  (`bake_dashboard.py` / `dashboard_template.html`) — has been removed.
-- **`/add-patient` is a client-side route, not a separate HTML page.** "Same URL,
-  different page" is exactly what React Router does — both pages are served by the
-  same Vite dev server / built bundle, and the URL bar changes without a full page
-  reload. Two independently deployable static pages would be a different (simpler,
-  but less "app-like") structure.
-- **API base URL is a runtime setting, not hardcoded.** It's editable from the nav bar
-  (persisted in `localStorage`) plus a build-time `.env` default, rather than
-  hardcoding `localhost:8000`, since you'll likely want to point this at a real server
-  eventually.
