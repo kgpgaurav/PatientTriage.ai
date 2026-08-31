@@ -1,13 +1,36 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { api, BAND_COLOR, SYMPTOMS } from "../api";
 import ShapBars from "../components/ShapBars";
 
-const initialForm = {
-  patient_id: "", age: "", age_months: "", gender: "other", hr: "", sbp: "", rr: "", temp: "", spo2: "",
-  mental_status_altered: false, pregnancy: false, has_prior_history: "true",
-  note: "",
-};
+// These don't change between readings for the same patient -- carried over
+// (and locked, via the isReassess flag below) when the form is opened via a
+// queue row's "Reassess" button, instead of asking the nurse to re-enter
+// identical answers every time. Vitals, mental status, symptoms, and the
+// note are always freshly entered, reassess or not.
+function blankForm(overrides = {}) {
+  return {
+    patient_id: "", age: "", age_months: "", gender: "other", hr: "", sbp: "", rr: "", temp: "", spo2: "",
+    mental_status_altered: false, pregnancy: false, has_prior_history: "true",
+    note: "",
+    ...overrides,
+  };
+}
+
+// Builds the carried-over fields from a queue entry (see QueueRow's
+// "Reassess" button) -- converting types to match the form's own shape
+// (has_prior_history is a "true"/"false" string here, a real boolean on
+// the entry from GET /queue).
+function reassessOverrides(entry) {
+  return {
+    patient_id: entry.patient_id || "",
+    age: entry.age != null ? String(entry.age) : "",
+    age_months: entry.age_months != null ? String(entry.age_months) : "",
+    gender: entry.gender || "other",
+    has_prior_history: String(!!entry.has_prior_history),
+    pregnancy: !!entry.pregnancy,
+  };
+}
 
 // Mirrors data_gen.age_group on the backend, purely for an immediate visual
 // hint as the nurse types an age -- the backend always derives (and is the
@@ -21,12 +44,39 @@ function deriveAgeGroup(ageStr) {
 }
 
 export default function AddPatient() {
-  const [form, setForm] = useState(initialForm);
+  const location = useLocation();
+  const reassessEntry = location.state?.reassess || null;
+
+  const [form, setForm] = useState(() =>
+    reassessEntry ? blankForm(reassessOverrides(reassessEntry)) : blankForm()
+  );
+  const [isReassess, setIsReassess] = useState(!!reassessEntry);
   const [symptoms, setSymptoms] = useState({});
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
+
+  // A fresh "new patient" open (not a reassess) gets a suggested next ID on
+  // load -- just a starting point in an editable field, not a reservation
+  // (see db.next_patient_id). Skipped when prefilled via "Reassess", since
+  // that ID is the whole point of the button. assignFreshId is also called
+  // explicitly after a successful submit and by "Submit another patient",
+  // since each of those needs a new suggestion, not just a mount-time one.
+  async function assignFreshId() {
+    try {
+      const { patient_id } = await api.getNextPatientId();
+      setForm((f) => ({ ...f, patient_id }));
+    } catch {
+      // Non-fatal -- the field just stays blank and the nurse types an ID
+      // by hand, exactly like before this existed.
+    }
+  }
+
+  useEffect(() => {
+    if (!isReassess) assignFreshId();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function update(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
@@ -65,8 +115,7 @@ export default function AddPatient() {
     try {
       const res = await api.submitTriage(payload);
       setResult(res);
-      setForm(initialForm);
-      setSymptoms({});
+      resetToFreshForm();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -74,9 +123,15 @@ export default function AddPatient() {
     }
   }
 
-  function submitAnother() {
-    setForm(initialForm);
+  function resetToFreshForm() {
+    setIsReassess(false);
+    setForm(blankForm());
     setSymptoms({});
+    assignFreshId();
+  }
+
+  function submitAnother() {
+    resetToFreshForm();
     setResult(null);
     setError(null);
   }
@@ -85,27 +140,33 @@ export default function AddPatient() {
     <div className="grid-2">
       <div className="panel">
         <h2>New patient / reassessment</h2>
+        {isReassess && (
+          <div className="result-box" style={{ marginBottom: 12, fontSize: 12.5 }}>
+            Reassessing <b>{form.patient_id}</b> — demographics below are carried over from their prior
+            record and locked. Enter this reading's current vitals, symptoms, and note.
+          </div>
+        )}
         <form onSubmit={handleSubmit}>
           <div className="field">
             <label>Patient ID</label>
             <input
               id="f-patient-id"
-              type="text" required placeholder="e.g. P-1042 or MRN"
+              type="text" required placeholder="e.g. P-1042 or MRN" disabled={isReassess}
               value={form.patient_id} onChange={(e) => update("patient_id", e.target.value)}
             />
           </div>
           <div className="row3">
             <div className="field">
               <label>Age (years)</label>
-              <input id="f-age" type="number" min="0" max="120" required value={form.age} onChange={(e) => update("age", e.target.value)} />
+              <input id="f-age" type="number" min="0" max="120" required disabled={isReassess} value={form.age} onChange={(e) => update("age", e.target.value)} />
             </div>
             <div className="field">
               <label>Months</label>
-              <input id="f-age-months" type="number" min="0" max="11" value={form.age_months} onChange={(e) => update("age_months", e.target.value)} />
+              <input id="f-age-months" type="number" min="0" max="11" disabled={isReassess} value={form.age_months} onChange={(e) => update("age_months", e.target.value)} />
             </div>
             <div className="field">
               <label>Gender</label>
-              <select id="f-gender" value={form.gender} onChange={(e) => update("gender", e.target.value)}>
+              <select id="f-gender" value={form.gender} disabled={isReassess} onChange={(e) => update("gender", e.target.value)}>
                 <option value="male">Male</option>
                 <option value="female">Female</option>
                 <option value="other">Other</option>
@@ -122,7 +183,7 @@ export default function AddPatient() {
             </div>
             <div className="field">
               <label>Has prior history?</label>
-              <select id="f-history" value={form.has_prior_history} onChange={(e) => update("has_prior_history", e.target.value)}>
+              <select id="f-history" value={form.has_prior_history} disabled={isReassess} onChange={(e) => update("has_prior_history", e.target.value)}>
                 <option value="true">yes</option>
                 <option value="false">no (first visit)</option>
               </select>
@@ -145,7 +206,7 @@ export default function AddPatient() {
               Altered mental status
             </label>
             <label className="chk">
-              <input id="f-pregnant" type="checkbox" checked={form.pregnancy} onChange={(e) => update("pregnancy", e.target.checked)} />
+              <input id="f-pregnant" type="checkbox" checked={form.pregnancy} disabled={isReassess} onChange={(e) => update("pregnancy", e.target.checked)} />
               Pregnancy
             </label>
           </div>

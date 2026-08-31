@@ -56,6 +56,9 @@ body,button,input,select,textarea,.btn,.field,.pid,.vitals,.prob,.wait,.quality,
 .field input[type=text]:focus, .field input[type=number]:focus, .field select:focus, .field textarea:focus{
   border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);background:var(--panel);
 }
+.field input[type=text]:disabled, .field input[type=number]:disabled, .field select:disabled{
+  opacity:.6;cursor:not-allowed;background:var(--panel-2);
+}
 .field textarea{resize:vertical;min-height:60px;font-family:var(--sans);}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}

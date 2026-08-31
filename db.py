@@ -1,11 +1,20 @@
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "outputs", "triage.db")
 
 SAFE_WAIT_MINUTES = {1: 5, 2: 10, 3: 30, 4: 60, 5: 120}
+
+# Auto-generated live-intake patient IDs look like "P-1001", "P-1002", ...
+# Deliberately a different shape from the fixed demo set (patients.py uses
+# "P01".."P20", no dash) so the two ID spaces never collide or interact --
+# next_patient_id() below only ever looks at IDs matching _AUTO_ID_PATTERN.
+_AUTO_ID_PREFIX = "P-"
+_AUTO_ID_START = 1001
+_AUTO_ID_PATTERN = re.compile(r"^P-(\d+)$")
 
 # ED disposition — where the patient is in the encounter. `waiting` is the
 # default; a clinician moves them forward from the dashboard. `superseded`
@@ -142,6 +151,11 @@ def reset_demo_db():
     log written by `pipeline.run`/`audit.write_record` -- since that log is
     meant to be an append-only record independent of what's currently in the
     live queue. Delete that file yourself if you want a fully blank slate.
+
+    Also resets next_patient_id()'s counter back to _AUTO_ID_START, since it
+    derives the next number from whatever's currently in `patients` -- an
+    empty table means the next demo take gets P-1001 again, not wherever the
+    previous take left off.
     """
     conn = get_conn()
     conn.execute("DELETE FROM patients")
@@ -152,6 +166,28 @@ def reset_demo_db():
     )
     conn.commit()
     conn.close()
+
+
+def next_patient_id():
+    """Suggest the next sequential live-intake patient ID (P-1001, P-1002,
+    ...) for the "Add patient" form to pre-fill. This is a suggestion, not a
+    reservation -- nothing is written here, and the ID only actually exists
+    once a `/triage` submission uses it. The nurse can still type over it
+    (e.g. to reassess an existing patient by entering that patient's ID
+    instead), so there's no lock/reservation step to worry about either.
+
+    Only considers IDs already in the P-<digits> shape; the fixed demo set
+    (patients.py's P01..P20) doesn't match and is never touched or affected.
+    """
+    conn = get_conn()
+    rows = conn.execute("SELECT DISTINCT patient_id FROM patients").fetchall()
+    conn.close()
+    max_n = _AUTO_ID_START - 1
+    for row in rows:
+        m = _AUTO_ID_PATTERN.match(row["patient_id"])
+        if m:
+            max_n = max(max_n, int(m.group(1)))
+    return f"{_AUTO_ID_PREFIX}{max_n + 1}"
 
 
 def seed_demo_patients_if_empty(pipeline=None):
@@ -634,9 +670,15 @@ def get_queue(now=None):
             # --- safety gate ---
             "safety_gate_reason": row["safety_gate_reason"],
             "safety_gate_triggers": safety_gate_triggers,
-            # --- vitals / demographics, for the collapsed row's "Vitals" column ---
+            # --- vitals / demographics, for the collapsed row's "Vitals" column
+            # and for pre-filling the "Reassess" form (age, gender, prior-history,
+            # pregnancy don't change between readings, so they're carried over) ---
             "age": input_record.get("age"),
+            "age_months": input_record.get("age_months"),
             "age_group": input_record.get("age_group"),
+            "gender": input_record.get("gender"),
+            "has_prior_history": input_record.get("has_prior_history"),
+            "pregnancy": input_record.get("pregnancy"),
             "hr": input_record.get("hr"),
             "sbp": input_record.get("sbp"),
             "rr": input_record.get("rr"),

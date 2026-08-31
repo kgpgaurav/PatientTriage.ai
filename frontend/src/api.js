@@ -45,6 +45,7 @@ async function request(path, options = {}) {
 
 export const api = {
   modelStatus: () => request("/model/status"),
+  getNextPatientId: () => request("/patients/next-id"),
   submitTriage: (payload) => request("/triage", { method: "POST", body: JSON.stringify(payload) }),
   getQueue: () => request("/queue"),
   getAudit: (n = 20) => request(`/audit?n=${n}`),

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, BAND_COLOR, dispositionLabel, dispositionColor } from "../api";
 import ShapBars from "./ShapBars";
 
@@ -109,6 +110,7 @@ function HistoryPanel({ patientId }) {
 }
 
 export default function QueueRow({ entry, onOverridden }) {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [clinicianBand, setClinicianBand] = useState(entry.final_recommended_band);
@@ -163,6 +165,26 @@ export default function QueueRow({ entry, onOverridden }) {
     } finally {
       setDispositionSubmitting(null);
     }
+  }
+
+  // Opens the intake form pre-filled with this patient's demographics
+  // (age, gender, prior-history, pregnancy) locked, so the nurse only has
+  // to enter the current reading's vitals/symptoms/note -- same identity,
+  // same patient_id, matched by ID exactly like a manually re-typed ID
+  // already was before this button existed.
+  function startReassess() {
+    navigate("/add-patient", {
+      state: {
+        reassess: {
+          patient_id: entry.patient_id,
+          age: entry.age,
+          age_months: entry.age_months,
+          gender: entry.gender,
+          has_prior_history: entry.has_prior_history,
+          pregnancy: entry.pregnancy,
+        },
+      },
+    });
   }
 
   const isNoChange = clinicianBand === entry.final_recommended_band;
@@ -372,6 +394,9 @@ export default function QueueRow({ entry, onOverridden }) {
                       {dispositionSubmitting === a.value ? "…" : a.label}
                     </button>
                   ))}
+                  <button className="btn secondary" onClick={startReassess}>
+                    Reassess
+                  </button>
                 </div>
               )}
               {dispositionError && <div className="error-box" style={{ marginTop: 6 }}>{dispositionError}</div>}

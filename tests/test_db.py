@@ -251,3 +251,52 @@ def test_migration_renames_legacy_data_quality_column():
     finally:
         if os.path.exists(path):
             os.remove(path)
+
+
+def test_next_patient_id_starts_at_base_on_empty_db(temp_db):
+    assert temp_db.next_patient_id() == "P-1001"
+
+
+def test_next_patient_id_increments_past_existing(temp_db):
+    temp_db.insert_triage_record("P-1001", {"patient_id": "P-1001", "age": 40}, _fake_result())
+    temp_db.insert_triage_record("P-1005", {"patient_id": "P-1005", "age": 40}, _fake_result())
+    assert temp_db.next_patient_id() == "P-1006"
+
+
+def test_next_patient_id_ignores_non_matching_ids(temp_db):
+    # The fixed demo set (P01..P20) and any manually-typed ID (e.g. a real
+    # MRN) shouldn't affect or be affected by the auto-sequence.
+    temp_db.insert_triage_record("P18", {"patient_id": "P18", "age": 40}, _fake_result())
+    temp_db.insert_triage_record("MRN-9981", {"patient_id": "MRN-9981", "age": 40}, _fake_result())
+    assert temp_db.next_patient_id() == "P-1001"
+
+
+def test_next_patient_id_is_a_suggestion_not_a_reservation(temp_db):
+    # Calling it twice without an insert in between returns the same value --
+    # nothing is written or reserved by the call itself.
+    first = temp_db.next_patient_id()
+    second = temp_db.next_patient_id()
+    assert first == second == "P-1001"
+
+
+def test_reset_demo_db_restarts_the_auto_id_sequence(temp_db):
+    temp_db.insert_triage_record("P-1001", {"patient_id": "P-1001", "age": 40}, _fake_result())
+    assert temp_db.next_patient_id() == "P-1002"
+    temp_db.reset_demo_db()
+    assert temp_db.next_patient_id() == "P-1001"
+
+
+def test_get_queue_includes_demographics_for_reassess_prefill(temp_db):
+    temp_db.insert_triage_record(
+        "R1",
+        {
+            "patient_id": "R1", "age": 45, "age_months": None, "gender": "female",
+            "has_prior_history": False, "pregnancy": True, "hr": 90,
+        },
+        _fake_result(),
+    )
+    entry = temp_db.get_queue()[0]
+    assert entry["gender"] == "female"
+    assert entry["has_prior_history"] is False
+    assert entry["pregnancy"] is True
+    assert entry["age_months"] is None

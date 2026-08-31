@@ -23,7 +23,17 @@ from surge import BASELINE_ARRIVALS_PER_HOUR
 from validation import ValidationError, validate_band
 
 app = FastAPI(title="PatientTriage.ai")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Scoped to the known frontend origin(s), not "*" -- a wildcard origin next to
+# an API-key-in-header auth scheme is a real combination to avoid, especially
+# since the React app persists its key to localStorage (frontend/src/api.js).
+# Override via TRIAGE_ALLOWED_ORIGINS (comma-separated) for a non-default
+# frontend host/port or a real deployment; defaults cover the Vite dev server.
+_allowed_origins_raw = os.environ.get(
+    "TRIAGE_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+)
+ALLOWED_ORIGINS = [origin.strip() for origin in _allowed_origins_raw.split(",") if origin.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
 # Resolve model/output paths relative to this file, not the process's current
 # working directory -- so `python api.py` and `uvicorn api:app` behave the
@@ -39,14 +49,12 @@ with open(os.path.join(OUTPUTS_DIR, "feature_cols.json")) as f:
     _feature_cols = json.load(f)
 
 pipeline = TriagePipeline(_critical_model, _severity_model, _feature_cols)
-db.init_db()
-db.seed_demo_patients_if_empty(pipeline)#new
 
 
 @app.on_event("startup")
 def _startup():
     db.init_db()
-    db.seed_demo_patients_if_empty(pipeline)#new
+    db.seed_demo_patients_if_empty(pipeline)
 
 
 class PatientInput(BaseModel):
@@ -117,6 +125,7 @@ def triage(patient: PatientInput, caller=Depends(auth.require_role("nurse"))):
         "extraction_backend": result.get("extraction_backend"),
         "reassessment": bool(history),
         "submitted_by_role": caller["role"],
+        "submitted_by": caller.get("name"),
     })
 
     client_result = {k: v for k, v in result.items() if k != "feature_snapshot"}
@@ -149,9 +158,17 @@ def override(payload: OverrideInput, caller=Depends(auth.require_role("clinician
             "override_reason": cleaned_reason or None,
             "is_downgrade": payload.clinician_band > payload.ai_recommendation_band,
             "decided_by_role": caller["role"],
+            "decided_by": caller.get("name"),
         },
     )
     return {"status": "recorded"}
+
+
+@app.get("/patients/next-id")
+def next_patient_id(caller=Depends(auth.require_role("nurse"))):
+    """Suggested next auto-generated patient ID for the intake form to
+    pre-fill (see db.next_patient_id -- a suggestion, not a reservation)."""
+    return {"patient_id": db.next_patient_id()}
 
 
 @app.get("/queue")
@@ -186,7 +203,7 @@ def queue_status(caller=Depends(auth.require_role("nurse"))):
 def patient_detail(patient_id: str, caller=Depends(auth.require_role("clinician"))):
     detail = db.get_patient_detail(patient_id)
     db.insert_audit("patient_record_accessed", patient_id, {
-        "accessed_by_role": caller["role"], "found": bool(detail),
+        "accessed_by_role": caller["role"], "accessed_by": caller.get("name"), "found": bool(detail),
     })
     if not detail:
         raise HTTPException(status_code=404, detail="patient not found")
@@ -281,12 +298,35 @@ def model_status():
 
 
 @app.post("/model/unavailable")
-def set_unavailable():
+def set_unavailable(caller=Depends(auth.require_role("admin"))):
+    """Operational safety control, not a data read -- gated at admin even
+    though it carries no PII, since it can force the whole pipeline into the
+    rules-only fallback path for every patient triaged until it's reversed."""
     pipeline.set_model_unavailable()
+    db.insert_audit("model_set_unavailable", None, {
+        "triggered_by_role": caller["role"], "triggered_by": caller.get("name"),
+    })
     return {"status": pipeline.model_status}
 
 
 @app.post("/model/available")
-def set_available():
+def set_available(caller=Depends(auth.require_role("admin"))):
     pipeline.set_model_available()
+    db.insert_audit("model_set_available", None, {
+        "triggered_by_role": caller["role"], "triggered_by": caller.get("name"),
+    })
     return {"status": pipeline.model_status}
+
+
+@app.post("/admin/reload-keys")
+def reload_api_keys(caller=Depends(auth.require_role("admin"))):
+    """Re-reads TRIAGE_API_KEYS (via a fresh dotenv load, so an edited .env
+    file is picked up) without restarting the server -- lets a rotated or
+    revoked key take effect immediately instead of needing a redeploy."""
+    load_dotenv(override=True)
+    keys = auth.reload_keys()
+    db.insert_audit("api_keys_reloaded", None, {
+        "triggered_by_role": caller["role"], "triggered_by": caller.get("name"),
+        "key_count": len(keys),
+    })
+    return {"status": "reloaded", "key_count": len(keys)}

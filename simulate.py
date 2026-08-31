@@ -78,29 +78,16 @@ def run_surge_demo():
     return {"normal": normal, "surge_3x": surge}
 
 
-def dump_dashboard_snapshot(pipeline, rows, override_entries, queue_policy_results, surge_stats, path="outputs/dashboard_data.json"):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as f:
-        json.dump({
-            "patients": rows,
-            "overrides": override_entries,
-            "queue_policy_comparison": queue_policy_results,
-            "surge_stats": surge_stats,
-        }, f, indent=2, default=str)
-
-
 def main():
     pipeline = load_pipeline()
     rows = run_demo_patients(pipeline)
-    override_entries = run_override_demo(pipeline, rows)
-    surge_stats = run_surge_demo()
+    run_override_demo(pipeline, rows)
+    run_surge_demo()
 
     print("\n=== QUEUE POLICY COMPARISON (static vs FIFO vs wait-decay) ===")
     from queue_sim import compare_queue_policies
     policy_results = compare_queue_policies()
     print(json.dumps(policy_results, indent=2, default=str)[:2000])
-
-    dump_dashboard_snapshot(pipeline, rows, override_entries, policy_results, surge_stats)
 
     print("\n=== AUDIT LOG TAIL ===")
     entries = audit.read_all()

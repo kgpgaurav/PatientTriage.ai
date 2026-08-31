@@ -29,7 +29,7 @@ implemented here.
 7. [Queue / surge behavior](#7-queue--surge-behavior)
 8. [ML results](#8-ml-results-4000-synthetic-patients-5-fold-cv-x-3-seeds)
 9. [Demo patients](#9-demo-patients-patientspy-run-via-simulatepy)
-10. [Dashboards](#10-dashboards-live-vs-offline)
+10. [Dashboard](#10-dashboard-react)
 11. [Live API reference](#11-live-api-apipy)
 12. [Data handling notes](#12-data-handling-notes)
 13. [Limitations](#13-limitations)
@@ -44,13 +44,13 @@ up is the most common source of confusion — start here.
 
 | # | System | What it's for | Talks to a database? |
 |---|---|---|---|
-| 1 | **Offline demo** — `train.py` → `simulate.py` → `bake_dashboard.py` → `outputs/dashboard.html` | A fixed, reproducible demonstration on 20 hand-built patients, for review/grading | No — reads/writes flat JSON/JSONL files only |
+| 1 | **Offline demo** — `train.py` → `simulate.py` | A fixed, reproducible console demonstration on 20 hand-built patients, for review/grading | No — reads/writes flat JSON/JSONL files only |
 | 2 | **Live API + database** — `api.py`, `db.py`, `pipeline.py` | The actual running service — real patients, real persistence | Yes — SQLite, `outputs/triage.db` |
-| 3 | **Live frontend** — React app (`frontend/`), **the default UI** | What a nurse actually looks at and types into | No state of its own — it's a client of system 2 |
+| 3 | **Live frontend** — React app (`frontend/`), **the only UI** | What a nurse actually looks at and types into | No state of its own — it's a client of system 2 |
 
 Systems 2 and 3 together are "the live path." System 1 is untouched by the live path —
-it's a separate, self-contained demo that some teams keep for grading and others drop
-once the live React path is the primary deliverable (see [§10](#10-dashboards-live-vs-offline)).
+it's a separate, self-contained console demo kept for grading/review, independent of
+the live path entirely (see [§10](#10-dashboard-react)).
 
 ---
 
@@ -177,7 +177,7 @@ actually arrived, not from the reassessment.
 
 | File | Role |
 |---|---|
-| `db.py` | SQLite schema + all reads/writes. The only file that touches `triage.db` directly. |
+| `db.py` | SQLite schema + all reads/writes. The only file that touches `triage.db` directly. Also suggests auto-generated patient IDs (`next_patient_id`). |
 | `pipeline.py` | Orchestrates one triage decision: extraction → features → model → gate → explanation. Used by both `api.py` (live) and `simulate.py` (offline). |
 | `features.py` | Age-conditioned vital deviations, temporal/deterioration deltas, missingness flags. |
 | `llm_extract.py` | Free-text → structured symptoms. Real OpenAI call if `OPENAI_API_KEY` is set, heuristic regex/negation extractor otherwise, with automatic fallback on any API failure. |
@@ -186,42 +186,34 @@ actually arrived, not from the reassessment.
 | `data_gen.py` | Generates the synthetic 4,000-patient training set. |
 | `queue_sim.py` | Safe-wait ceilings + the static/FIFO/wait-decay policy comparison. Used by the offline `simulate.py` demo *and* by `api.py`'s `POST /surge/simulate`. |
 | `surge.py` | `determine_operational_state()` — classifies ED workload as NORMAL/SURGE/CRISIS from arrival rate alone (never clinical data). Used by `api.py` and `db.get_live_operational_status()`. |
+| `surge_simulator.py` | Live, real-time arrival simulator behind `POST /surge/simulate-arrivals` — inserts real rows into `triage.db` through the same `pipeline.run()` / `db.insert_triage_record()` path a real submission uses, one at a time, until the live NORMAL/SURGE/CRISIS detector itself reports non-NORMAL (or a safety cap is hit). Distinct from `queue_sim.py`'s offline what-if simulator. |
 | `validation.py` | Vitals/age plausibility bounds — enforced at the Pydantic layer in `api.py` (fast 422) and again inside `pipeline.run()` (so direct callers like tests/seeding are covered too). |
 | `audit.py` | Append-only JSONL log at `outputs/audit_log.jsonl`. Written on every `pipeline.run()` call — live and offline alike. |
-| `patients.py` | The 20 fixed demo patients — used by offline `simulate.py` *and* by `seeds.py` to populate the live database. |
+| `auth.py` | Role-based access control (`nurse` < `clinician` < `admin`) for the live API, keyed by the `TRIAGE_API_KEYS` env var — one key *per staff member*, not per role, so every audited action records who did it, not just their role. Runs open (no auth) if that var is unset — see [§11](#11-live-api-apipy) and `SETUP.md` §6.1a for setup and the full endpoint/role table. |
+| `patients.py` | The 20 fixed demo patients — used by offline `simulate.py` *and* by `reset_and_seed.py` to populate the live database. |
 | `api.py` | FastAPI app — the live HTTP interface described in [§2](#2-end-to-end-flow). |
 | `train.py` | STEP 1 of the offline demo — trains + evaluates everything, writes `outputs/*.pkl` + `training_results.json`. Also produces the models `api.py` loads for the live path. |
-| `simulate.py` | STEP 2 — runs the 20 demo patients + one override + a 3× surge + policy comparison, writes `outputs/dashboard_data.json`. |
-| `bake_dashboard.py` | STEP 3 (offline dashboard only) — bakes `dashboard_data.json` into `dashboard_template.html`'s `__DATA__` placeholder, writes `outputs/dashboard.html`. |
-| `seeds.py` | Convenience script (not part of any automated chain): POSTs all 20 `patients.py` entries to a *running* `uvicorn api:app`, so the live DB / React dashboard has realistic data without manual entry. See `SETUP.md` §9. |
-| `fix_demo_arrivals.py` | Convenience script: rewrites `arrival_time` on rows already in `triage.db` so the live queue shows a realistic breached / not-breached mix instead of everyone in the same state. Safe to re-run any time. |
+| `simulate.py` | STEP 2 — runs the 20 demo patients + one override + a 3× surge + policy comparison, printing every result to the console. |
+| `fix_demo_arrivals.py` | Convenience script: rewrites `arrival_time` on rows already in `triage.db` so the live queue shows a realistic breached / not-breached mix instead of everyone in the same state. Safe to re-run any time. Also called by `reset_and_seed.py`'s default mode. |
+| `reset_and_seed.py` | Convenience script (not part of any automated chain): POSTs all 20 `patients.py` entries to a *running* `uvicorn api:app`, so the live DB / React dashboard has realistic data without manual entry. By default also wipes `patients`/`overrides`/`audit_log` first (`db.reset_demo_db()`) and randomizes arrival times afterward via `fix_demo_arrivals.py`, so every demo take starts from the same clean state; run with `--seed-only` to just POST the demo patients without resetting or randomizing anything. See `SETUP.md` §9. |
 
 ### Frontend
 
 | File | Role |
 |---|---|
-| `frontend/` | **The React app — the default dashboard.** See `frontend/README.md` for dev commands. |
+| `frontend/` | **The React app — the only dashboard.** See `SETUP.md` §6.2 for dev commands. |
 | `frontend/src/main.jsx` | Entry point, wraps `App` in `BrowserRouter`. |
 | `frontend/src/App.jsx` | Route table: `/` → `Dashboard`, `/add-patient` → `AddPatient`, `/surge` → `SurgeDashboard`. All render inside `Layout`. |
 | `frontend/src/api.js` | Every backend call in one place, plus the runtime-configurable API base URL (nav bar "reconnect" field, persisted to `localStorage`). |
 | `frontend/src/index.css` | Design tokens (CSS variables) + all component classes. |
 | `frontend/src/components/Layout.jsx` | Shared nav bar with page links and a live "connected / not connected" indicator against the API. |
-| `frontend/src/components/QueueRow.jsx` | One expandable queue row + its override form (enforces the reason-code-on-downgrade rule client-side, same as the backend). |
+| `frontend/src/components/QueueRow.jsx` | One expandable queue row + its override form (enforces the reason-code-on-downgrade rule client-side, same as the backend) + a "Reassess" button that opens the intake form pre-filled for that patient. |
 | `frontend/src/components/ShapBars.jsx` | Renders a SHAP explanation array as signed horizontal bars. |
 | `frontend/src/pages/Dashboard.jsx` | `/` — live queue, band counts, filters, audit trail. Polls, never mutates except through `QueueRow`'s override form. |
-| `frontend/src/pages/AddPatient.jsx` | `/add-patient` — the intake form + result panel. The *only* place a patient gets created. |
+| `frontend/src/pages/AddPatient.jsx` | `/add-patient` — the intake form + result panel. The *only* place a patient gets created. A fresh open suggests the next auto-generated ID (editable); opened via a queue row's "Reassess" button instead, it locks the demographics that don't change between readings and leaves vitals/symptoms/note blank for fresh entry. |
 | `frontend/src/pages/SurgeDashboard.jsx` | `/surge` — live operational status, 1×/2×/3× scenario selector, policy-comparison metrics, queue visualization. |
 | `frontend/package-lock.json` | Locked dependency versions — commit this for reproducible `npm install`. |
 | `frontend/.env.example` | Template for `VITE_API_BASE`; copy to `frontend/.env` to set a build-time default API URL. |
-| `frontend_nurse_intake.html` | **Superseded by `frontend/`.** Zero-dependency fallback intake page (no `npm install` needed) — talks to the exact same endpoints. Not under active development. |
-
-### Offline static dashboard (separate from the React app — see [§10](#10-dashboards-live-vs-offline))
-
-| File | Role |
-|---|---|
-| `dashboard_template.html` | The static dashboard's HTML/CSS/JS shell, with an unfilled `__DATA__` placeholder. |
-| `outputs/dashboard.html` | The finished, self-contained static dashboard — `dashboard_template.html` + baked-in `dashboard_data.json`. |
-| `outputs/dashboard_data.json` | Snapshot of the 20 demo patients + queue experiment, written by `simulate.py`. |
 
 ### Tests
 
@@ -230,9 +222,11 @@ actually arrived, not from the reassessment.
 | `tests/test_safety_gate.py` | The core safety invariant — escalation-only, for every rule. |
 | `tests/test_llm_extract.py` | Negation handling, and the OpenAI success/failure/malformed-JSON paths against a mocked client. |
 | `tests/test_pipeline.py` | Missing/invalid input, model-unavailable fallback, override reason-code enforcement. |
-| `tests/test_db.py` | Persistence, reassessment history, queue ordering, override + audit writes, breach flagging by real elapsed time. |
+| `tests/test_db.py` | Persistence, reassessment history, queue ordering, override + audit writes, breach flagging by real elapsed time, auto-generated patient ID sequencing. |
 | `tests/test_queue_sim.py` | Queue-policy simulation (FIFO / static-priority / wait-protected). |
 | `tests/test_surge.py` | NORMAL/SURGE/CRISIS classification thresholds. |
+| `tests/test_auth.py` | `auth.py` in isolation — key parsing (`key:role:name`), role grants/denials, key reload, constant-time match. |
+| `tests/test_api_auth.py` | The same access control against the real HTTP endpoints (`TestClient`) — role gates, admin-only operational controls, audit attribution by name, CORS allowlist. |
 
 ### Generated (`outputs/`) — not checked in by hand
 
@@ -243,8 +237,6 @@ actually arrived, not from the reassessment.
 | `outputs/severity_model.pkl` | `train.py` |
 | `outputs/feature_cols.json` | `train.py` |
 | `outputs/training_results.json` | `train.py` |
-| `outputs/dashboard_data.json` | `simulate.py` |
-| `outputs/dashboard.html` | `bake_dashboard.py` |
 | `outputs/audit_log.jsonl` | Any `pipeline.run()` call, live or offline |
 | `outputs/triage.db` | `api.py`, created automatically on first run |
 
@@ -459,50 +451,49 @@ attempted downgrade with no reason code is shown being rejected.
 
 ---
 
-## 10. Dashboards (live vs. offline)
+## 10. Dashboard (React)
 
-There are effectively two dashboards in this repo — **only one is the default going forward.**
+`frontend/` (React) is the only dashboard. Band-colored queue rows, an
+input-completeness badge, P(critical), model band vs. gate-escalated final band, a
+working override control, live polling of `/queue` and `/audit`, and the `/surge`
+operational tab. It's a client of the live API (system 2 in [§1](#1-three-systems-in-one-repo))
+and reflects real, persisted data.
 
-- **`frontend/` (React) — the default, live dashboard.** Band-colored queue rows, an
-  input-completeness badge, P(critical), model band vs. gate-escalated final band, a
-  working override control, live polling of `/queue` and `/audit`, and the
-  `/surge` operational tab. This is a client of the live API (system 2 in [§1](#1-three-systems-in-one-repo))
-  and reflects real, persisted data.
-- **`outputs/dashboard.html` (static, offline) — a frozen snapshot, not the default.**
-  A self-contained HTML file (band-colored rows, input-completeness badge, P(critical),
-  model band vs. gate-escalated final band). Clicking a row expands the pipeline for
-  that patient — the extracted note, the SHAP-driven explanation, the safety-gate
-  reasoning, and a working override control that refuses a downgrade without a reason
-  code, same as `pipeline.record_clinician_decision`. It's driven entirely by the JSON
-  `simulate.py` writes to `outputs/dashboard_data.json`, baked in by `bake_dashboard.py`
-  — nothing here talks to the live API or `triage.db`. Useful for a no-server,
-  no-build snapshot (e.g. for grading), but not connected to real, persisted data.
-  Re-run `simulate.py` and `bake_dashboard.py` to refresh it with new scenarios.
-
-**If you don't need the no-server offline snapshot**, `dashboard_template.html`,
-`bake_dashboard.py`, and the two generated files it depends on
-(`outputs/dashboard_data.json`, `outputs/dashboard.html`) can all be deleted together
-— nothing else in the codebase imports them. Same goes for `frontend_nurse_intake.html`,
-which is a zero-Node fallback for the *live* API, superseded by `frontend/`. See
-`SETUP.md` §10 for the full cleanup list.
+An earlier static-HTML offline dashboard (`bake_dashboard.py` / `dashboard_template.html`)
+and a zero-dependency HTML fallback intake page (`frontend_nurse_intake.html`) have both
+been removed now that `frontend/` is the only frontend. `simulate.py` ([§9](#9-demo-patients-patientspy-run-via-simulatepy))
+still runs the same 20-patient scenario as a console-only script, independent of any
+dashboard, if you want a no-server sanity check of the pipeline.
 
 ---
 
 ## 11. Live API (`api.py`)
 
-`uvicorn api:app` exposes the actual pipeline, not a replay of pre-computed results:
+`uvicorn api:app` exposes the actual pipeline, not a replay of pre-computed results.
+Every endpoint except `/model/status` and the `/surge/*` trio is gated by `auth.py`'s
+role-based access control — see the "Minimum role" column. `/model/unavailable` and
+`/model/available` carry no PII but are gated at `admin` anyway, since they're an
+operational safety control (they can force the whole pipeline into rules-only
+fallback), not a data read. If `TRIAGE_API_KEYS` is unset, the API runs open and no
+key is required (local-demo default); set it before any shared/real deployment. Full
+setup: `SETUP.md` §6.1a.
 
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/triage` | POST | Submit a new patient or a reassessment — runs the full pipeline, writes to `patients` table |
-| `/override` | POST | Log a clinician decision — rejects an unexplained downgrade |
-| `/queue` | GET | Current waiting patients with real elapsed wait time vs. safe-wait ceiling |
-| `/patients/{patient_id}` | GET | Full latest record for one patient, including SHAP explanation |
-| `/audit` | GET | Recent audit log entries (`?n=` to control how many) |
-| `/model/status` | GET | Whether the pipeline is using the live model or the rules-only fallback |
-| `/model/unavailable` / `/model/available` | POST | Toggle the safe-fallback path (for testing degraded mode) |
-| `/surge/status` | GET | Live NORMAL/SURGE/CRISIS classification from real arrivals |
-| `/surge/simulate` | POST | Offline what-if scenario (multiplier, duration, clinician count, seed) |
+| Endpoint | Method | Purpose | Minimum role |
+|---|---|---|---|
+| `/triage` | POST | Submit a new patient or a reassessment — runs the full pipeline, writes to `patients` table | `nurse` |
+| `/patients/next-id` | GET | Suggests the next auto-generated patient ID (`P-1001`, `P-1002`, ...) for the intake form to pre-fill — a suggestion, not a reservation | `nurse` |
+| `/override` | POST | Log a clinician decision — rejects an unexplained downgrade | `clinician` |
+| `/queue` | GET | Current waiting patients with real elapsed wait time vs. safe-wait ceiling | `nurse` |
+| `/patients/{patient_id}` | GET | Full latest record for one patient, including SHAP explanation | `clinician` |
+| `/patients/{patient_id}/history` | GET | Patient's prior vitals only (no note/SHAP) | `nurse` |
+| `/disposition` | POST | Move a patient's ED disposition (in treatment, admitted, discharged, ...) | `clinician` |
+| `/audit` | GET | Recent audit log entries (`?n=` to control how many) | `admin` |
+| `/admin/reload-keys` | POST | Re-reads `TRIAGE_API_KEYS` (via a fresh `.env` load) without a server restart, so a rotated/revoked key takes effect immediately | `admin` |
+| `/model/status` | GET | Whether the pipeline is using the live model or the rules-only fallback | none |
+| `/model/unavailable` / `/model/available` | POST | Toggle the safe-fallback path (for testing degraded mode) — an operational control, gated even though it touches no PII | `admin` |
+| `/surge/status` | GET | Live NORMAL/SURGE/CRISIS classification from real arrivals | none |
+| `/surge/simulate` | POST | Offline what-if scenario (multiplier, duration, clinician count, seed) | none |
+| `/surge/simulate-arrivals` | POST | Starts the live, real-time arrival simulator (`surge_simulator.py`) that feeds the real NORMAL/SURGE/CRISIS detector | none |
 
 This is the piece that matches the design doc's "Frontend → API → LLM extraction →
 features → XGBoost → calibration → Safety Gate → clinician → audit" request flow as a
@@ -578,6 +569,14 @@ project's own audit-trail philosophy:
   schema validation already in place.
 - No real EHR, bed-management, or staffing-roster integration; the pipeline assumes
   data arrives in the shapes `features.py` expects.
+- **Access control is prototype-scope, by design.** `auth.py` uses long-lived static
+  API keys (one per staff member, with a name attached for audit accountability), not
+  real IAM/SSO with short-lived tokens — see that file's own docstring. It also has no
+  per-patient/department scoping (any valid `clinician` key can read any patient
+  system-wide) and no automated response to repeated auth failures beyond logging them
+  (`db.insert_audit`). A production deployment should replace the key store with
+  OAuth/OIDC-issued tokens, add relationship- or department-based access, and add
+  rate-limiting/alerting on repeated denials.
 - This is a decision-support prototype, not an autonomous or clinically validated
   triage system, and should not be represented as one.
 
@@ -588,11 +587,10 @@ project's own audit-trail philosophy:
 A few places where a judgment call was made — worth flagging in case they don't match
 what you have in mind:
 
-- **Two frontends existed, now one is the default.** `frontend_nurse_intake.html` was
-  kept alongside the React app on the theory that "more dev-friendly" meant "a better
-  one to build on," not "the old one was wrong." With `frontend/` now the default,
-  the fallback file is a candidate for deletion — see `SETUP.md` §10 — but is
-  harmless to keep if you still want a zero-Node demo path.
+- **Two frontends existed; now there's one.** `frontend_nurse_intake.html` was kept
+  alongside the React app early on as a zero-Node fallback. With `frontend/` as the
+  only frontend, that file — along with the old static-HTML offline dashboard chain
+  (`bake_dashboard.py` / `dashboard_template.html`) — has been removed.
 - **`/add-patient` is a client-side route, not a separate HTML page.** "Same URL,
   different page" is exactly what React Router does — both pages are served by the
   same Vite dev server / built bundle, and the URL bar changes without a full page
