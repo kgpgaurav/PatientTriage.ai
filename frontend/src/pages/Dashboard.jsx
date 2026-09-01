@@ -25,7 +25,7 @@ export default function Dashboard() {
       setLoadError(e.message);
     }
     try {
-      const a = await api.getAudit(15);
+      const a = await api.getAudit(100);
       setAudit(a);
       setAuditError(null);
     } catch (e) {

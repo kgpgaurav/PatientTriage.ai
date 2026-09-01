@@ -54,7 +54,7 @@ export const api = {
   getNextPatientId: () => request("/patients/next-id"),
   submitTriage: (payload) => request("/triage", { method: "POST", body: JSON.stringify(payload) }),
   getQueue: () => request("/queue"),
-  getAudit: (n = 20) => request(`/audit?n=${n}`),
+  getAudit: (n = 100) => request(`/audit?n=${n}`),
   getPatient: (patientId) => request(`/patients/${encodeURIComponent(patientId)}`),
   getPatientHistory: (patientId) => request(`/patients/${encodeURIComponent(patientId)}/history`),
   submitOverride: (payload) => request("/override", { method: "POST", body: JSON.stringify(payload) }),
