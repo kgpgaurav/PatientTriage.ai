@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, BAND_COLOR, dispositionLabel, dispositionColor } from "../api";
+import { api, attributionLabel, BAND_COLOR, dispositionLabel, dispositionColor, formatDateTime } from "../api";
 import ShapBars from "./ShapBars";
 
 function BandPill({ band }) {
@@ -41,9 +41,9 @@ function vitalsLine(entry) {
   return parts.length ? parts.reduce((acc, p, i) => (i === 0 ? [p] : [...acc, "  \u00A0 ", p]), []) : "—";
 }
 
-function formatTime(iso) {
-  return iso ? iso.slice(11, 19) : "—";
-}
+// Local formatTime removed -- use the shared formatDateTime from ../api, which
+// renders the backend's UTC-ISO timestamps in the browser's local timezone
+// (and includes the date, since a wait can span past midnight).
 
 // Which disposition buttons make sense from the current state.
 // Once a patient reaches a resolved state, their clock is frozen and no
@@ -85,26 +85,68 @@ function HistoryPanel({ patientId }) {
   if (history === null) return <div className="history-loading">Loading history…</div>;
   if (history.length === 0) return <div className="history-empty">No decisions or status changes logged yet.</div>;
 
+  const readings = history.filter((h) => h.type === "vitals_reading");
+  const events = history.filter((h) => h.type !== "vitals_reading");
+
   return (
-    <div className="history-list">
-      {history.map((h, i) => (
-        <div className="history-item" key={i}>
-          <span className="history-time">{formatTime(h.created_at)}</span>
-          {h.type === "band_decision" ? (
-            <span>
-              Clinician logged <b>Band {h.clinician_decision_band}</b>
-              {h.ai_recommendation_band != null && ` (AI recommended ${h.ai_recommendation_band})`}
-              {h.is_downgrade ? " — downgrade" : ""}
-              {h.override_reason ? ` — "${h.override_reason}"` : ""}
-            </span>
-          ) : (
-            <span>
-              Status: <b>{dispositionLabel(h.previous_status)}</b> → <b>{dispositionLabel(h.new_status)}</b>
-              {h.note ? ` — "${h.note}"` : ""}
-            </span>
-          )}
+    <div>
+      {readings.length > 0 && (
+        <div className="readings-table-wrap" style={{ marginBottom: 14 }}>
+          <div className="lbl" style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", marginBottom: 6 }}>
+            Readings over time{readings.length > 1 ? ` (${readings.length}, oldest first)` : ""}
+          </div>
+          <table className="readings-table">
+            <thead>
+              <tr>
+                <th>Time</th><th>HR</th><th>SBP</th><th>RR</th><th>Temp</th><th>SpO2</th>
+                <th>P(crit)</th><th>Band</th>
+              </tr>
+            </thead>
+            <tbody>
+              {readings.map((r, i) => (
+                <tr key={i}>
+                  <td>{formatDateTime(r.created_at)}</td>
+                  <td>{r.hr ?? "—"}</td>
+                  <td>{r.sbp ?? "—"}</td>
+                  <td>{r.rr ?? "—"}</td>
+                  <td>{r.temp ?? "—"}</td>
+                  <td>{r.spo2 ?? "—"}</td>
+                  <td>{r.critical_probability != null ? r.critical_probability.toFixed(2) : "—"}</td>
+                  <td>{r.final_recommended_band ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      ))}
+      )}
+
+      <div className="history-list">
+        {events.map((h, i) => {
+          const who = attributionLabel(h.decided_by_role, h.decided_by);
+          return (
+            <div className="history-item" key={i}>
+              <span className="history-time">{formatDateTime(h.created_at)}</span>
+              {h.type === "band_decision" && (
+                <span>
+                  Clinician logged <b>Band {h.clinician_decision_band}</b>
+                  {h.ai_recommendation_band != null && ` (AI recommended ${h.ai_recommendation_band})`}
+                  {h.is_downgrade ? " — downgrade" : ""}
+                  {h.override_reason ? ` — "${h.override_reason}"` : ""}
+                </span>
+              )}
+              {h.type === "disposition_change" && (
+                <span>
+                  Status: <b>{dispositionLabel(h.previous_status)}</b> → <b>{dispositionLabel(h.new_status)}</b>
+                  {h.note ? ` — "${h.note}"` : ""}
+                </span>
+              )}
+              {h.type === "reassessment_performed" && <span>New reading logged for a required reassessment</span>}
+              {h.type === "wait_breach_detected" && <span>Safe-wait ceiling breached</span>}
+              {who && <span style={{ color: "var(--muted)" }}> — {who}</span>}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -307,7 +349,7 @@ export default function QueueRow({ entry, onOverridden }) {
 
             {entry.reassessment_required && (
               <div className="error-box" style={{ display: "block", marginBottom: 10 }}>
-                Wait-time safety envelope exceeded — reassessment required (flagged {entry.reassessment_required_at ? formatTime(entry.reassessment_required_at) : ""}).
+                Wait-time safety envelope exceeded — reassessment required (flagged {entry.reassessment_required_at ? formatDateTime(entry.reassessment_required_at) : ""}).
               </div>
             )}
 
@@ -379,7 +421,7 @@ export default function QueueRow({ entry, onOverridden }) {
 
               {isResolved ? (
                 <div className="disposition-resolved">
-                  Resolved at {formatTime(entry.status_updated_at)}. Wait clock stopped
+                  Resolved at {formatDateTime(entry.status_updated_at)}. Wait clock stopped
                   ({entry.waited_min}m of {entry.ceiling_min}m ceiling{entry.breached ? ", breached" : ""}).
                 </div>
               ) : (

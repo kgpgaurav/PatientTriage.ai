@@ -150,6 +150,13 @@ td.band-cell{width:6px;padding:0;}
 .history-time{color:var(--muted);margin-right:8px;font-weight:500;}
 .history-loading,.history-empty{margin-top:12px;font-size:13px;color:var(--muted);font-family:var(--sans);}
 
+.readings-table-wrap{overflow-x:auto;}
+.readings-table{width:100%;border-collapse:collapse;font-size:12.5px;font-family:var(--sans);}
+.readings-table th{text-align:left;font-family:var(--ui-font);font-size:10.5px;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.04em;padding:4px 10px 6px 0;border-bottom:1px solid var(--line);}
+.readings-table td{padding:6px 10px 6px 0;border-bottom:1px solid var(--line);white-space:nowrap;}
+.readings-table tr:last-child td{border-bottom:none;font-weight:600;}
+
 .pipeline{display:flex;gap:10px;align-items:stretch;margin-bottom:16px;overflow-x:auto;}
 .pstep{flex:1;min-width:140px;border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;position:relative;background:var(--panel);}
 .pstep .lbl{font-family:var(--sans);font-size:10.5px;color:var(--muted);text-transform:uppercase;font-weight:700;letter-spacing:.05em;}

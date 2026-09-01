@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, BAND_COLOR, OPERATIONAL_STATE_COLOR } from "../api";
+import { api, attributionLabel, BAND_COLOR, formatDateTime, OPERATIONAL_STATE_COLOR } from "../api";
 import QueueRow from "../components/QueueRow";
 
 export default function Dashboard() {
@@ -164,14 +164,23 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="audit-list">
-            {[...audit].reverse().map((e, i) => (
-              <div key={i}>
-                {(e.created_at || "").slice(11, 19)} — <b>{e.event_type}</b> {e.patient_id}
-                {e.final_recommended_band != null && `: band ${e.final_recommended_band}`}
-                {e.clinician_decision_band != null && `: AI ${e.ai_recommendation_band} → clinician ${e.clinician_decision_band}`}
-                {e.override_reason && ` ("${e.override_reason}")`}
-              </div>
-            ))}
+            {[...audit].reverse().map((e, i) => {
+              const who = attributionLabel(
+                e.decided_by_role || e.submitted_by_role || e.triggered_by_role || e.accessed_by_role,
+                e.decided_by || e.submitted_by || e.triggered_by || e.accessed_by
+              );
+              return (
+                <div key={i}>
+                  {formatDateTime(e.created_at)} — <b>{e.event_type}</b> {e.patient_id}
+                  {e.final_recommended_band != null && `: band ${e.final_recommended_band}`}
+                  {e.clinician_decision_band != null && `: AI ${e.ai_recommendation_band} → clinician ${e.clinician_decision_band}`}
+                  {e.previous_status && e.new_status && `: ${e.previous_status} → ${e.new_status}`}
+                  {e.override_reason && ` ("${e.override_reason}")`}
+                  {e.note && ` ("${e.note}")`}
+                  {who && <span style={{ color: "var(--muted)" }}> — {who}</span>}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

@@ -115,7 +115,10 @@ def triage(patient: PatientInput, caller=Depends(auth.require_role("nurse"))):
     # dashboard needs to display the original free-text note, so stash it in a
     # copy used only for persistence — this does not touch what the model saw.
     record_for_storage = {**record, "note": patient.note}
-    row_id, arrival_time = db.insert_triage_record(patient.patient_id, record_for_storage, result)
+    row_id, arrival_time = db.insert_triage_record(
+        patient.patient_id, record_for_storage, result,
+        decided_by_role=caller["role"], decided_by=caller.get("name"),
+    )
     db.insert_audit("triage_submitted", patient.patient_id, {
         "row_id": row_id,
         "final_recommended_band": result["final_recommended_band"],
@@ -148,7 +151,10 @@ def override(payload: OverrideInput, caller=Depends(auth.require_role("clinician
         raise HTTPException(status_code=400, detail="No clinician band change selected.")
     if payload.clinician_band > payload.ai_recommendation_band and not cleaned_reason:
         raise HTTPException(status_code=400, detail="Downgrading below the AI recommendation requires a reason code.")
-    db.apply_override(payload.patient_id, payload.ai_recommendation_band, payload.clinician_band, cleaned_reason or None)
+    db.apply_override(
+        payload.patient_id, payload.ai_recommendation_band, payload.clinician_band, cleaned_reason or None,
+        decided_by_role=caller["role"], decided_by=caller.get("name"),
+    )
     db.insert_audit(
         "clinician_override" if payload.clinician_band != payload.ai_recommendation_band else "clinician_confirmed",
         payload.patient_id,
@@ -218,7 +224,13 @@ def patient_history(patient_id: str, caller=Depends(auth.require_role("nurse")))
 @app.post("/disposition")
 def set_disposition(payload: DispositionInput, caller=Depends(auth.require_role("clinician"))):
     try:
-        result = db.set_disposition(payload.patient_id, payload.disposition, payload.note)
+        result = db.set_disposition(
+            payload.patient_id,
+            payload.disposition,
+            payload.note,
+            decided_by_role=caller["role"],
+            decided_by=caller.get("name"),
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return result

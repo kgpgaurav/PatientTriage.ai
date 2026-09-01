@@ -98,6 +98,38 @@ export function dispositionColor(value) {
   return DISPOSITIONS.find((d) => d.value === value)?.color || "var(--muted)";
 }
 
+// The backend stores every timestamp as a UTC ISO string (`datetime.now(timezone.utc).isoformat()`),
+// e.g. "2026-09-01T06:40:56.123456+00:00". `new Date(iso)` parses the offset correctly, so
+// everything below renders in the *browser's* local timezone -- not the raw UTC clock the API
+// stores. Use these everywhere a timestamp is shown instead of slicing the raw ISO string.
+export function formatDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+export function formatTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+// Short "who did this" label for audit/history entries -- e.g. "Dr. J. Rao (clinician)"
+// or, when no name is on the API key (old "key:role" format), just "(clinician)".
+export function attributionLabel(role, name) {
+  if (!role && !name) return null;
+  if (name && role) return `${name} (${role})`;
+  return name || `(${role})`;
+}
+
 export const SYMPTOMS = [
   "chest_pain", "shortness_of_breath", "fever", "confusion", "headache",
   "abdominal_pain", "vomiting", "bleeding", "weakness", "dizziness",

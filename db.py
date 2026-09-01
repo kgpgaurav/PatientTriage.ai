@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS overrides (
     clinician_decision_band INTEGER,
     override_reason TEXT,
     is_downgrade INTEGER,
+    decided_by_role TEXT,
+    decided_by TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -132,6 +134,8 @@ def init_db():
     _ensure_column(conn, "patients", "confidence_score", "REAL")
     _ensure_column(conn, "patients", "confidence_level", "TEXT")
     _ensure_column(conn, "patients", "confidence_reason", "TEXT")
+    _ensure_column(conn, "overrides", "decided_by_role", "TEXT")
+    _ensure_column(conn, "overrides", "decided_by", "TEXT")
     conn.execute(
         "INSERT OR IGNORE INTO surge_watermark (id, last_state, max_queue_length, over_threshold) "
         "VALUES (1, NULL, 0, 0)"
@@ -246,10 +250,15 @@ def get_active_patient_row(patient_id):
     return dict(row) if row else None
 
 
-def set_disposition(patient_id, disposition, note=None):
+def set_disposition(patient_id, disposition, note=None, decided_by_role=None, decided_by=None):
     """Move a patient's ED disposition forward (waiting -> in_treatment -> admitted/
     treatment_successful/discharged). Freezes that patient's wait clock at the moment
     of the change (see get_queue) and writes an audit_log entry so it shows up in history.
+
+    `decided_by_role`/`decided_by` identify the caller who made the change (mirrors
+    the pattern already used for clinician_override in api.py's /override handler)
+    so every disposition change -- admit, discharge, move to in_treatment, etc. --
+    is attributable to a specific person, not just "someone with clinician rights".
     """
     if disposition not in ED_DISPOSITIONS:
         raise ValueError(f"Unknown disposition '{disposition}'. Must be one of {ED_DISPOSITIONS}.")
@@ -276,20 +285,31 @@ def set_disposition(patient_id, disposition, note=None):
         "previous_status": previous_status,
         "new_status": disposition,
         "note": note,
+        "decided_by_role": decided_by_role,
+        "decided_by": decided_by,
     })
     return {"patient_id": patient_id, "status": disposition, "status_updated_at": now}
 
 
 def get_patient_timeline(patient_id):
-    """Chronological history for one patient: every clinician band decision
-    (from `overrides`) plus every disposition change and wait-breach/reassessment
-    event (from `audit_log`), oldest first. Powers the per-patient history view
-    in the dashboard.
+    """Chronological history for one patient: every vitals reading (from
+    `patients` -- one row per original submission or reassessment, including
+    superseded ones), every clinician band decision (from `overrides`), and
+    every disposition change / wait-breach / reassessment event (from
+    `audit_log`), oldest first. Powers the per-patient history view in the
+    dashboard, including the "previous readings" table shown on reassessment.
     """
     conn = get_conn()
+    reading_rows = conn.execute(
+        "SELECT input_json, final_recommended_band, model_recommended_band, "
+        "critical_probability, created_at FROM patients WHERE patient_id = ? "
+        "ORDER BY created_at",
+        (patient_id,),
+    ).fetchall()
     override_rows = conn.execute(
         "SELECT ai_recommendation_band, clinician_decision_band, override_reason, "
-        "is_downgrade, created_at FROM overrides WHERE patient_id = ? ORDER BY created_at",
+        "is_downgrade, decided_by_role, decided_by, created_at FROM overrides "
+        "WHERE patient_id = ? ORDER BY created_at",
         (patient_id,),
     ).fetchall()
     audit_rows = conn.execute(
@@ -302,6 +322,21 @@ def get_patient_timeline(patient_id):
     conn.close()
 
     timeline = []
+    for row in reading_rows:
+        rec = json.loads(row["input_json"])
+        timeline.append({
+            "type": "vitals_reading",
+            "created_at": row["created_at"],
+            "hr": rec.get("hr"),
+            "sbp": rec.get("sbp"),
+            "rr": rec.get("rr"),
+            "temp": rec.get("temp"),
+            "spo2": rec.get("spo2"),
+            "mental_status_altered": rec.get("mental_status_altered"),
+            "final_recommended_band": row["final_recommended_band"],
+            "model_recommended_band": row["model_recommended_band"],
+            "critical_probability": row["critical_probability"],
+        })
     for row in override_rows:
         timeline.append({
             "type": "band_decision",
@@ -310,6 +345,8 @@ def get_patient_timeline(patient_id):
             "clinician_decision_band": row["clinician_decision_band"],
             "override_reason": row["override_reason"],
             "is_downgrade": bool(row["is_downgrade"]),
+            "decided_by_role": row["decided_by_role"],
+            "decided_by": row["decided_by"],
         })
     for row in audit_rows:
         payload = json.loads(row["payload_json"])
@@ -320,6 +357,8 @@ def get_patient_timeline(patient_id):
                 "previous_status": payload.get("previous_status"),
                 "new_status": payload.get("new_status"),
                 "note": payload.get("note"),
+                "decided_by_role": payload.get("decided_by_role"),
+                "decided_by": payload.get("decided_by"),
             })
         else:
             timeline.append({
@@ -348,7 +387,8 @@ def get_patient_history(patient_id, limit=3):
     return history, (rows[0]["created_at"] if rows else None)
 
 
-def insert_triage_record(patient_id, input_record, result, arrival_time=None):
+def insert_triage_record(patient_id, input_record, result, arrival_time=None,
+                          decided_by_role=None, decided_by=None):
     conn = get_conn()
     existing = get_active_patient_row(patient_id)
     was_reassessment_required = False
@@ -389,12 +429,14 @@ def insert_triage_record(patient_id, input_record, result, arrival_time=None):
             "previous_row_id": existing["id"],
             "new_row_id": row_id,
             "arrival_time": arrival_time,
+            "decided_by_role": decided_by_role,
+            "decided_by": decided_by,
         })
 
     return row_id, arrival_time
 
 
-def apply_override(patient_id, ai_band, clinician_band, reason_code):
+def apply_override(patient_id, ai_band, clinician_band, reason_code, decided_by_role=None, decided_by=None):
     is_downgrade = clinician_band > ai_band
     conn = get_conn()
     row = conn.execute(
@@ -409,9 +451,10 @@ def apply_override(patient_id, ai_band, clinician_band, reason_code):
         )
     conn.execute(
         """INSERT INTO overrides (patient_row_id, patient_id, ai_recommendation_band,
-           clinician_decision_band, override_reason, is_downgrade, created_at)
-           VALUES (?,?,?,?,?,?,?)""",
-        (row_id, patient_id, ai_band, clinician_band, reason_code, int(is_downgrade), _now()),
+           clinician_decision_band, override_reason, is_downgrade, decided_by_role, decided_by, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (row_id, patient_id, ai_band, clinician_band, reason_code, int(is_downgrade),
+         decided_by_role, decided_by, _now()),
     )
     conn.commit()
     conn.close()
