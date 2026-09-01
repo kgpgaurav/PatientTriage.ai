@@ -13,8 +13,14 @@ export function setApiBase(url) {
 // X-API-Key so the backend's role-based access control (auth.py) can tell
 // who's asking and log/scope access accordingly. Kept in localStorage only,
 // not in source; entering it is a one-time login-style step per browser.
+//
+// Deliberately no `import.meta.env.VITE_API_KEY` fallback here: Vite inlines
+// any VITE_-prefixed env var into the built JS bundle at build time, so a
+// real key placed in frontend/.env would ship in plaintext to every visitor
+// permanently, not just be readable in one person's local DevTools/storage.
+// The in-app "reconnect" field -> localStorage is the only supported path.
 export function getApiKey() {
-  return localStorage.getItem(API_KEY_STORAGE_KEY) || import.meta.env.VITE_API_KEY || "";
+  return localStorage.getItem(API_KEY_STORAGE_KEY) || "";
 }
 
 export function setApiKey(key) {
