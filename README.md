@@ -13,13 +13,214 @@ part of the legally-discoverable clinical record. A GDPR deployment would additi
 need explicit consent capture and a right-to-erasure path for the audit store — not
 implemented here.
 
-> **Setup / install / run instructions live in [`SETUP.md`](./SETUP.md).** This file
-> covers architecture, results, file roles, and design rationale.
+> Architecture, results, file roles, and design rationale are covered in the sections
+> below. `SETUP.md` in this repo has the same execution instructions in more detail,
+> plus troubleshooting notes — this section is the self-contained version for anyone
+> reading only this file.
+
+---
+
+## 0. Setup & execution instructions
+
+### 0.1 Requirements
+
+- Python 3.10+ (built and tested on 3.12)
+- Node.js + npm (for the React frontend, §10 / §0.6 below)
+- pip
+- Internet access only if you want to (a) `pip install` fresh, or (b) use the real
+  OpenAI note-extraction backend (§0.7). Everything else runs fully offline.
+
+### 0.2 Install
+
+```bash
+cd patient_triage
+python3 -m venv .venv          # optional but recommended
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+This installs: `numpy`, `pandas`, `scikit-learn`, `xgboost`, `shap`, `fastapi`,
+`uvicorn`, `openai`, `pytest`.
+
+Then set up your environment file:
+
+```bash
+cp .env.example .env
+```
+
+`.env.example` documents two independent, optional settings — leave either blank if
+you don't need it:
+- `OPENAI_API_KEY` / `OPENAI_MODEL` — only needed for the real OpenAI note-extraction
+  backend (§0.7); without it, the heuristic extractor is used automatically.
+- `TRIAGE_API_KEYS` — only needed to turn on patient-data access control on the live
+  API (§0.5a); without it, the API runs open (fine for a local-only demo).
+
+### 0.3 Train the model
+
+```bash
+python3 train.py
+```
+
+Generates 4,000 synthetic ED patients, runs the baseline comparison (LR / RF /
+XGBoost), a cost-sensitivity sweep, an age-aware ablation, then trains and calibrates
+the final critical-risk model and the severity regressor, and computes global SHAP
+importance. Takes under a minute on a laptop CPU. Writes to `outputs/`:
+`critical_model.pkl`, `severity_model.pkl`, `feature_cols.json`,
+`training_results.json`. **This must run before anything else below** — both the
+offline demo and the live API load these files.
+
+### 0.4 Run the offline demo (console only, no server/DB)
+
+```bash
+python3 simulate.py
+```
+
+Runs all 20 patients in `patients.py` through the full pipeline, logs a clinician
+override, runs the 3× surge simulation and queue-policy comparison, and prints the
+audit log tail. No dashboard, no database — a pure sanity check. Skip straight to §0.5
+if you want the UI.
+
+### 0.5 Live path — nurse enters a patient, it's saved to the database
+
+This is the persistent workflow: a nurse fills in a form in the browser, submits it,
+and the triage decision is written to `outputs/triage.db` (SQLite) — not held in
+memory, not lost on restart.
+
+**Start the API:**
+```bash
+uvicorn api:app --reload --port 8000
+```
+On first run this creates `outputs/triage.db` automatically (`db.init_db()`, no
+manual migration step). You should see `INFO: Uvicorn running on http://127.0.0.1:8000`.
+
+#### 0.5a (Optional but recommended) Turn on patient-data access control
+
+By default — if `TRIAGE_API_KEYS` is unset in `.env` — the API runs **open**: anyone
+who can reach it can read/write patient data. Fine for a solo local demo; turn this on
+the moment more than one person can reach the server:
+
+```bash
+# in .env
+TRIAGE_API_KEYS=nurse-demo-key:nurse:A. Fisher,clinician-demo-key:clinician:Dr. J. Rao,admin-demo-key:admin:M. Otieno
+```
+
+Each entry is **`key:role:name`** — one key per staff member, not one shared key per
+role. The name is technically optional (`key:role` still parses) but you should always
+set one, or the audit trail can only prove "a clinician did this," never "which
+clinician." Roles rank `nurse` < `clinician` < `admin` — a higher role can reach
+everything a lower one can. Restart `uvicorn` after editing `.env`, or call
+`POST /admin/reload-keys` (admin-only) instead of restarting.
+
+Every request now needs an `X-API-Key` header; a missing key gets `401`, an
+insufficient role gets `403`. Quick check:
+```bash
+curl -s http://localhost:8000/queue                                    # -> 401, no key
+curl -s http://localhost:8000/queue -H "X-API-Key: nurse-demo-key"      # -> 200
+curl -s http://localhost:8000/audit -H "X-API-Key: nurse-demo-key"      # -> 403, wrong role
+curl -s http://localhost:8000/audit -H "X-API-Key: admin-demo-key"      # -> 200
+```
+
+CORS is scoped, not wildcard — by default only `http://localhost:5173` /
+`http://127.0.0.1:5173` (the Vite dev server) is accepted. Set
+`TRIAGE_ALLOWED_ORIGINS` in `.env` (comma-separated) if your frontend runs elsewhere.
+
+### 0.6 Open the intake form / dashboard
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the URL Vite prints (typically `http://localhost:5173`). Three routes: `/` (live
+board), `/add-patient` (intake form), `/surge` (surge simulation tab). If you turned on
+`TRIAGE_API_KEYS`, enter **`admin-demo-key`** in the nav bar's staff-key field for full
+functionality (admin outranks nurse/clinician, so it can do everything they can, plus
+see the audit panel) — a nurse/clinician key still works for the queue and intake, it
+just can't see the audit panel.
+
+Reassessment: use the **"Reassess"** button on any queue row (pre-fills the locked
+fields — ID, age, gender, history, pregnancy — and clears vitals for a new reading), or
+manually resubmit the same Patient ID with new vitals from `/add-patient` — both paths
+are identical under the hood. The original arrival time is preserved (the wait-time
+ceiling doesn't reset), and the prior reading is kept in the database (marked
+`superseded`, never deleted), so the full history stays queryable.
+
+### 0.7 Using the real OpenAI extraction backend (optional)
+
+```bash
+export OPENAI_API_KEY=sk-...
+export OPENAI_MODEL=gpt-4o-mini   # optional, this is the default
+```
+No code changes needed — restart `uvicorn api:app` after setting the key. Without it,
+the heuristic extractor in `llm_extract.py` is used automatically, and any OpenAI call
+failure (timeout, auth error, malformed response) falls back to it automatically too.
+
+### 0.8 Run the tests
+
+```bash
+python3 -m pytest tests/ -v
+```
+99 tests across eight files (safety gate, LLM extraction, pipeline, DB, queue
+simulation, surge classification, auth, and the auth-wired HTTP endpoints). If
+`test_pipeline.py`/`test_api_auth.py` fail with `FileNotFoundError` on
+`outputs/critical_model.pkl`, run `python3 train.py` first (§0.3).
+
+### 0.9 Seeding the live demo (optional)
+
+To make the dashboard show a realistic queue immediately instead of an empty board:
+```bash
+uvicorn api:app --reload --port 8000 &      # terminal 1, must already be running
+python3 reset_and_seed.py                   # terminal 2 — wipes and reseeds all 20 demo patients
+```
+Add `--seed-only` to add the 20 demo patients without wiping existing data. If
+`TRIAGE_API_KEYS` is set, `reset_and_seed.py` automatically picks a usable key from it.
+
+### 0.10 Full clean-run checklist
+
+```bash
+cd patient_triage
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env               # fill in OPENAI_API_KEY and/or TRIAGE_API_KEYS if you want them
+python3 train.py
+python3 -m pytest tests/ -v
+
+# offline demo path (20 fixed patients, console only) — optional
+python3 simulate.py
+
+# live path (real nurse intake, persisted to SQLite) — the only UI
+uvicorn api:app --reload --port 8000 &
+python3 reset_and_seed.py          # optional: clean, reseeded queue in one command
+cd frontend && npm install && npm run dev
+```
+
+If you only want to look at the offline results without training anything yourself,
+the `outputs/` folder shipped in the delivered project already contains a trained
+model and a training-results file — §0.3–0.4 are only needed if you've deleted
+`outputs/` or want to retrain with different settings. The live path (§0.5) always
+needs `uvicorn api:app` running, since it's a real server, not a snapshot.
+
+### 0.11 Repo hygiene — what NOT to commit
+
+- `.env` — contains your real `OPENAI_API_KEY` and/or `TRIAGE_API_KEYS`. Only
+  `.env.example` should be committed. Treat any real value that ever touched a public
+  repo as compromised and rotate it, even after deleting it in a later commit.
+- `__pycache__/`, `*.pyc`, `frontend/node_modules/`, `frontend/dist/` — all
+  regenerated/installed automatically.
+- `outputs/*.pkl`, `outputs/triage.db`, `outputs/synthetic_patients.csv`,
+  `outputs/training_results.json`, `outputs/audit_log.jsonl`,
+  `outputs/feature_cols.json` — all regenerated by `train.py` / `simulate.py` /
+  `api.py`; `triage.db` is local runtime state and will conflict with a
+  collaborator's own local data.
+- **Keep:** `frontend/package-lock.json`, `frontend/.env.example`, `.env.example` —
+  templates/lockfiles, not secrets or build output.
 
 ---
 
 ## Table of contents
 
+0. [Setup & execution instructions](#0-setup--execution-instructions)
 1. [Three systems in one repo](#1-three-systems-in-one-repo)
 2. [End-to-end flow](#2-end-to-end-flow)
 3. [Walking through one submission](#3-walking-through-one-submission)
@@ -581,4 +782,3 @@ project's own audit-trail philosophy:
   triage system, and should not be represented as one.
 
 ---
-
