@@ -32,6 +32,8 @@ def main():
     print("Running age-aware ablation...")
     ablation = models.age_aware_ablation(feat_df, X, y)
 
+    missingness_ablation = models.missingness_ablation(X, y)
+
     print("Training final calibrated critical-risk model...")
     critical_model = models.train_final_critical_model(X, y, scale_pos_weight=6.0)
 
@@ -50,6 +52,7 @@ def main():
         "baselines": baselines,
         "cost_sensitivity_sweep": sensitivity,
         "age_aware_ablation": ablation,
+        "missingness_ablation": missingness_ablation,
         "global_shap_importance": global_shap,
         "subgroup_recall_at_0.5": subgroup,
         "n_patients": len(feat_df),

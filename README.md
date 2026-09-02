@@ -600,11 +600,20 @@ Patient clinical data → triage pipeline → ML → Safety Gate → clinical ba
 
 ## 8. ML results (4,000 synthetic patients, 5-fold CV × 3 seeds)
 
+> **Corrected 2026-09-02.** An earlier run of this benchmark had a label-imputation
+> artifact: the synthetic generator scored a patient's ground-truth severity using `0`
+> for any vital that was later marked missing, which trips several hard severity
+> thresholds by construction and inflated the apparent critical rate and recall. The
+> fix computes the label from the complete, pre-missingness vitals instead
+> (`data_gen.py`, `generate_dataset()`) — see `FIX_LOG_label_imputation_artifact.md`
+> for the full root cause, before/after numbers, and the ablation proving the leak is
+> closed. **The numbers below are the corrected, post-fix numbers.**
+
 | Model | Recall (critical) | Precision | AUPRC | Brier |
 |---|---|---|---|---|
-| Logistic Regression (balanced) | 0.83 | 0.70 | 0.854 | 0.108 |
-| Random Forest (balanced) | 0.79 | 0.72 | 0.818 | 0.130 |
-| XGBoost (6× critical weight) | **0.91** | 0.61 | 0.848 | 0.135 |
+| Logistic Regression (balanced) | 0.83 | 0.50 | 0.716 | 0.106 |
+| Random Forest (balanced) | 0.69 | 0.61 | 0.691 | 0.093 |
+| XGBoost (6× critical weight) | **0.75** | 0.55 | 0.710 | 0.087 |
 
 **Honest finding:** XGBoost's AUPRC is not meaningfully better than a plain balanced
 logistic regression on this synthetic dataset — the gain from XGBoost shows up in
@@ -616,27 +625,33 @@ Cost-sensitivity sweep (critical-class weight):
 
 | Weight | Recall | Precision | FN rate |
 |---|---|---|---|
-| 2× | 0.81 | 0.74 | 0.20 |
-| 4× | 0.87 | 0.67 | 0.13 |
-| **6× (chosen)** | **0.91** | 0.61 | **0.09** |
-| 10× | 0.94 | 0.56 | 0.07 |
+| 2× | 0.64 | 0.67 | 0.36 |
+| 4× | 0.71 | 0.59 | 0.29 |
+| **6× (chosen)** | **0.75** | 0.55 | **0.25** |
+| 10× | 0.80 | 0.50 | 0.20 |
 
 6× is used as the deployed operating point: it materially cuts false negatives
-relative to 2×/4×, while 10×'s extra recall (3 points) costs 5 points of precision —
+relative to 2×/4×, while 10×'s extra recall (5 points) costs 5 points of precision —
 judged not worth the added over-triage. This should be revisited with real outcome
 data and clinician input, not treated as final.
 
-Age-aware ablation: age-conditioned features improve AUPRC (0.848 vs 0.829) and AUROC
-(0.925 vs 0.911) over treating age as a plain numeric feature — a small but consistent
-gain in this synthetic run, in line with the design doc's expectation, though it should
-still be treated as directional rather than conclusive given synthetic subgroup sizes.
+Age-aware ablation: age-conditioned features improve AUPRC (0.710 vs 0.625) and AUROC
+(0.922 vs 0.888) over treating age as a plain numeric feature — a larger and more
+consistent gap than the pre-correction run showed, in line with the design doc's
+expectation, though it should still be treated as directional rather than conclusive
+given synthetic subgroup sizes.
 
-Subgroup recall at threshold 0.5: pediatric 0.89 (n=633), adult 0.87 (n=2,421),
-geriatric 0.91 (n=946) — no subgroup was left materially behind.
+Subgroup recall at threshold 0.5: pediatric 0.81 (n=651), adult 0.83 (n=2,357),
+geriatric 0.83 (n=992) — no subgroup was left materially behind.
 
-Top global SHAP drivers: `spo2_abs_deficit`, missingness flags on HR/RR/SBP/SpO2,
-`mental_status_altered`, `bleeding`, `hr_deviation` — consistent with the hand-built
-Safety Gate's own priorities, which is the sanity check the design doc calls for.
+Top global SHAP drivers: `mental_status_altered`, `spo2_abs_deficit`, `bleeding`,
+`hr_deviation`, `sbp_deviation`, `rr_deviation`, `age`, `spo2_deviation` — consistent
+with the hand-built Safety Gate's own priorities, which is the sanity check the design
+doc calls for. Notably, **missingness flags no longer appear in the top drivers** —
+under the buggy generator they did, which was itself a symptom of the label leak;
+their absence now is further confirmation the leak is closed, not just reduced (the
+ablation in `FIX_LOG_label_imputation_artifact.md` §6 shows less than a one-point
+recall/AUPRC difference with vs. without the missingness features).
 
 ---
 

@@ -114,11 +114,12 @@ def generate_dataset(n=4000, seed=RNG_SEED):
             "has_prior_history": bool(rng.random() < 0.5),
         })
 
+        row["true_band"] = _true_band(row)
+
         for key in ("hr", "sbp", "rr", "temp", "spo2"):
             if rng.random() < 0.12:
                 row[key] = np.nan
 
-        row["true_band"] = _true_band({**row, **{k: (row[k] if not pd.isna(row[k]) else 0) for k in ("hr", "sbp", "rr", "temp", "spo2")}})
         rows.append(row)
 
     df = pd.DataFrame(rows)

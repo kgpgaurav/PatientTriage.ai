@@ -202,6 +202,17 @@ def age_aware_ablation(df, X, y):
     mean_b, std_b = cross_validated_eval(X, y, lambda: build_xgb(6.0))
     return {"naive_age_feature": mean_a, "age_conditioned": mean_b}
 
+def missingness_ablation(X, y):
+    missingness_cols = [c for c in X.columns if c.endswith("_missing")]
+    without_cols = [c for c in X.columns if c not in missingness_cols]
+    mean_with, std_with = cross_validated_eval(X, y, lambda: build_xgb(6.0))
+    mean_without, std_without = cross_validated_eval(X[without_cols], y, lambda: build_xgb(6.0))
+    return {
+        "with_missingness_features": {"mean": mean_with, "std": std_with},
+        "without_missingness_features": {"mean": mean_without, "std": std_without},
+        "missingness_feature_count": len(missingness_cols),
+    }
+
 
 def subgroup_recall(df, y, y_prob, threshold=0.5):
     out = {}
