@@ -172,6 +172,7 @@ To make the dashboard show a realistic queue immediately instead of an empty boa
 ```bash
 uvicorn api:app --reload --port 8000 &      # terminal 1, must already be running
 python3 reset_and_seed.py                   # terminal 2 — wipes and reseeds all 20 demo patients
+#set "TRIAGE_API_KEYS=admin-demo-key", set this before running reset_and_seed as it needs api key 
 ```
 Add `--seed-only` to add the 20 demo patients without wiping existing data. If
 `TRIAGE_API_KEYS` is set, `reset_and_seed.py` automatically picks a usable key from it.
